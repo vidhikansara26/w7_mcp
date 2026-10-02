@@ -74,10 +74,26 @@ PARSE_RETRY_HINT = (
     "Thought: ...\nFinal Decision: approve\nReason: ..."
 )
 
-# Stub for Phase 6 reflection (not invoked as a hard gate in Phase 5).
 REFLECTION_PROMPT = """Review your drafted decision against the retrieved tool outputs.
 Did you verify all policy parameters? Did you avoid committing to unverified timelines?
 If there are ambiguities, did you call flag_for_human_review instead of guessing?
+
+Rules while reflecting:
+- Prefer tool observations over the draft. If the draft conflicts with eligibility/
+  policy tool output, CORRECT the Final Decision.
+- Read JSON fields literally. If exceeds_frequency is false and eligible/decision_hint
+  is approve, you MUST keep or correct to approve — never invent an exceeds_frequency denial.
+- approve when tools show eligible=true or decision_hint=approve for a standard item.
+- decision_hint=deny / exceeds_frequency=true means deny UNLESS the User request has
+  exceptional justification (damaged, crushed, stolen, broken screen, client site).
+  Exceptional justification is in the USER REQUEST text, not inside eligibility JSON.
+- If exceeds_frequency is true AND the user request has exceptional justification AND
+  observations include flag_for_human_review, Final Decision MUST be escalate (never deny).
+- escalate also for non-standard items or missing tenure data after flag_for_human_review.
+- Do not invent dates or policy numbers missing from observations.
+
+User request:
+{user_request}
 
 Draft decision:
 {draft}
@@ -85,8 +101,8 @@ Draft decision:
 Tool observations:
 {observations}
 
-Reply with:
-Reflection: <validation or correction>
+Reply with EXACTLY:
+Reflection: <validation or what you corrected and why>
 Final Decision: <approve|deny|escalate>
-Reason: <updated or confirmed reason>
+Reason: <updated or confirmed reason citing tools>
 """

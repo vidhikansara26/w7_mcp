@@ -5,5 +5,7 @@ __pycache__/
 venv/
 .env
 data/escalations.jsonl
-# Keep traces/.gitkeep; commit curated scenario traces intentionally later.
+# Ad-hoc agent runs stay local; curated Phase 6 scenario traces are committed.
 traces/*.txt
+!traces/scenarios/
+!traces/scenarios/**/*.txt

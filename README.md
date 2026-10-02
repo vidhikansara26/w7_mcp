@@ -17,19 +17,26 @@ w7_mcp/
   agent.py                   # ReAct agent (Ollama + MCP)
   llm.py                     # Ollama /api/chat wrapper
   prompts.py                 # system + parse-retry prompts
-  traces/                    # Thought/Action/Observation logs
+  run_scenarios.py           # Phase 6 graded scenarios + reflection demo
+  traces/                    # ad-hoc Thought/Action/Observation logs
+  traces/scenarios/          # curated Phase 6 evidence traces
   requirements.txt
   .env.example               # OLLAMA_HOST, OLLAMA_MODEL
 ```
 
-## Setup
+## Setup (required)
+
+Use a project virtualenv — do not install deps into system Python.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env         # edit OLLAMA_HOST if needed
+cp .env.example .env               # edit OLLAMA_HOST if needed
 ```
+
+Confirm the venv is active (`which python` should point at `.venv/bin/python`) before
+running tests, the MCP client, or the agent. `.venv/` is gitignored.
 
 ## Unit tests
 
@@ -67,4 +74,19 @@ python agent.py "EMP-101: My laptop is about 4 years old and slowing down; can I
 python agent.py "I'm Alex Rivera in Engineering. My laptop is 4 years old — can I get a replacement?"
 ```
 
-Logs Thought → Action → Observation to stdout and `traces/`.
+Logs Thought → Action → Observation to stdout and `traces/`. Reflection runs by default
+(`--no-reflect` to skip).
+
+## Phase 6 scenarios + reflection
+
+```bash
+python run_scenarios.py
+```
+
+Writes curated traces under `traces/scenarios/`:
+
+- `00_reflection_correction.txt` — injected bad deny draft corrected to approve
+- `01_approve.txt` — EMP-101 clear approve
+- `02_deny.txt` — EMP-102 clear deny
+- `03_escalate_damage.txt` — EMP-103 early + damage → flag + escalate
+- `04_escalate_nonstandard.txt` — non-catalog item → flag + escalate

@@ -37,7 +37,11 @@ REASON_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 THOUGHT_RE = re.compile(
-    r"Thought\s*:\s*(.+?)(?=\n\s*(?:Action|Final\s*Decision)\s*:|\Z)",
+    r"Thought\s*:\s*(.+?)(?=\n\s*(?:Action|Final\s*Decision|Reflection)\s*:|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+REFLECTION_RE = re.compile(
+    r"Reflection\s*:\s*(.+?)(?=\n\s*Final\s*Decision\s*:|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -50,7 +54,6 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     match = ACTION_RE.search(text)
     raw = match.group(1).strip() if match else None
     if not raw:
-        # Fallback: first {...} block
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end == -1 or end <= start:
@@ -59,7 +62,6 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        # Try to tighten to first balanced object
         try:
             data = json.loads(raw.split("\n")[0])
         except json.JSONDecodeError:
@@ -91,7 +93,6 @@ def parse_assistant(text: str) -> dict[str, Any]:
         arguments = action_obj.get("arguments") or action_obj.get("args") or {}
         if not isinstance(arguments, dict):
             arguments = {}
-        # Local models sometimes emit Final Decision as a fake tool call.
         if tool and str(tool).strip().lower().replace("_", " ") in {
             "final decision",
             "finaldecision",
@@ -130,6 +131,18 @@ def parse_assistant(text: str) -> dict[str, Any]:
     return {"kind": "invalid", "thought": thought, "raw": text}
 
 
+def parse_reflection(text: str) -> dict[str, Any]:
+    """Parse Reflection / Final Decision / Reason from the reflection call."""
+    reflection_m = REFLECTION_RE.search(text)
+    final = parse_assistant(text)
+    return {
+        "reflection": (reflection_m.group(1).strip() if reflection_m else text.strip()),
+        "decision": final.get("decision") if final.get("kind") == "final" else None,
+        "reason": final.get("reason") if final.get("kind") == "final" else "",
+        "raw": text,
+    }
+
+
 def _observation_text(result: Any) -> str:
     parts: list[str] = []
     if getattr(result, "isError", False):
@@ -150,28 +163,99 @@ def _slug(prompt: str) -> str:
     return cleaned or "request"
 
 
-def _save_trace(prompt: str, lines: list[str], decision: str | None) -> Path:
+def _save_trace(
+    prompt: str,
+    lines: list[str],
+    decision: str | None,
+    *,
+    path: Path | None = None,
+    extra_header: dict[str, str] | None = None,
+) -> Path:
     TRACES_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = TRACES_DIR / f"{ts}_{_slug(prompt)}.txt"
+    if path is None:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = TRACES_DIR / f"{ts}_{_slug(prompt)}.txt"
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
     header = [
         f"prompt: {prompt}",
         f"model: {llm.ollama_model()}",
         f"host: {llm.ollama_host()}",
         f"decision: {decision or 'none'}",
-        "",
     ]
+    if extra_header:
+        for key, value in extra_header.items():
+            header.append(f"{key}: {value}")
+    header.append("")
     path.write_text("\n".join(header + lines) + "\n", encoding="utf-8")
     return path
 
 
-def reflect_stub(draft: str, observations: str) -> str | None:
-    """Phase 6 hook — not required for Phase 5 done gate."""
-    _ = REFLECTION_PROMPT.format(draft=draft, observations=observations)
-    return None
+_EXCEPTIONAL_PHRASES = (
+    "damaged",
+    "crushed",
+    "stolen",
+    "broken screen",
+    "client site",
+)
 
 
-async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dict[str, Any]:
+def _has_exceptional_justification(text: str) -> bool:
+    lowered = text.lower()
+    return any(p in lowered for p in _EXCEPTIONAL_PHRASES)
+
+
+def _mentions_nonstandard(text: str) -> bool:
+    lowered = text.lower()
+    markers = (
+        "standing desk",
+        "split keyboard",
+        "mechanical keyboard",
+        "non-standard",
+        "nonstandard",
+        "ergonomic split",
+    )
+    return any(m in lowered for m in markers)
+
+
+def run_reflection(
+    *,
+    user_request: str,
+    draft: str,
+    observations: str,
+) -> dict[str, Any]:
+    """Second Ollama call: validate or correct the drafted decision."""
+    prompt = REFLECTION_PROMPT.format(
+        user_request=user_request,
+        draft=draft,
+        observations=observations or "(no tool observations)",
+    )
+    raw = llm.chat(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are reviewing an IT equipment agent's draft. "
+                    "Correct errors using tool observations only."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+    )
+    parsed = parse_reflection(raw)
+    return parsed
+
+
+async def run_agent(
+    user_prompt: str,
+    *,
+    enable_reflection: bool = True,
+    inject_draft: str | None = None,
+    trace_path: Path | None = None,
+    scenario_id: str | None = None,
+) -> dict[str, Any]:
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[str(ROOT / "server.py")],
@@ -180,6 +264,7 @@ async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dic
 
     trace_lines: list[str] = []
     observations_log: list[str] = []
+    tools_called: list[str] = []
 
     def emit(block: str) -> None:
         print(block, flush=True)
@@ -196,7 +281,11 @@ async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dic
             ]
 
             emit(f"=== User request ===\n{user_prompt}\n")
-            emit(f"=== MCP tools ({len(tools)}) ===\n" + ", ".join(t.name for t in tools) + "\n")
+            emit(
+                f"=== MCP tools ({len(tools)}) ===\n"
+                + ", ".join(t.name for t in tools)
+                + "\n"
+            )
 
             decision: str | None = None
             reason = ""
@@ -231,8 +320,8 @@ async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dic
                 if parsed["kind"] == "final":
                     decision = parsed["decision"]
                     reason = parsed.get("reason") or ""
-                    emit(f"Final Decision: {decision}")
-                    emit(f"Reason: {reason}\n")
+                    emit(f"Draft Final Decision: {decision}")
+                    emit(f"Draft Reason: {reason}\n")
                     break
 
                 tool = parsed["tool"]
@@ -250,6 +339,7 @@ async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dic
                     continue
 
                 emit(f"Action: {json.dumps({'tool': tool, 'arguments': arguments})}")
+                tools_called.append(tool)
 
                 result = await session.call_tool(tool, arguments)
                 observation = _observation_text(result)
@@ -264,23 +354,96 @@ async def run_agent(user_prompt: str, *, enable_reflection: bool = False) -> dic
             else:
                 decision = "escalate"
                 reason = f"Exceeded max steps ({_max_steps()}); escalate rather than guess."
+                emit(f"Draft Final Decision: {decision}")
+                emit(f"Draft Reason: {reason}\n")
+
+            draft_decision = decision
+            draft_reason = reason
+            draft_text = f"Final Decision: {decision}\nReason: {reason}"
+
+            if inject_draft:
+                emit("=== Injected bad draft (reflection demo) ===")
+                emit(inject_draft + "\n")
+                draft_text = inject_draft
+                injected = parse_assistant(inject_draft)
+                if injected.get("kind") == "final":
+                    draft_decision = injected["decision"]
+                    draft_reason = injected.get("reason") or draft_reason
+
+            reflection_note = ""
+            if enable_reflection and decision:
+                emit("=== Reflection ===")
+                reflected = run_reflection(
+                    user_request=user_prompt,
+                    draft=draft_text,
+                    observations="\n\n".join(observations_log),
+                )
+                emit(reflected["raw"] + "\n")
+                reflection_note = reflected.get("reflection") or ""
+                if reflected.get("decision"):
+                    reflected_decision = reflected["decision"]
+                    # Guard: do not let reflection undo a correct escalate after flagging.
+                    flagged = "flag_for_human_review" in tools_called
+                    if (
+                        reflected_decision == "deny"
+                        and flagged
+                        and (
+                            _has_exceptional_justification(user_prompt)
+                            or _mentions_nonstandard(user_prompt)
+                            or draft_decision == "escalate"
+                        )
+                    ):
+                        emit(
+                            "=== Reflection guard ===\n"
+                            "Keeping escalate: flag_for_human_review was called and the "
+                            "request is non-standard or has exceptional justification.\n"
+                        )
+                        reflected_decision = "escalate"
+                        if not reflected.get("reason"):
+                            reflected["reason"] = (
+                                "Escalated after flag_for_human_review for "
+                                "non-standard item or exceptional early-refresh justification."
+                            )
+
+                    if reflected_decision != draft_decision:
+                        emit(
+                            "=== Reflection outcome ===\n"
+                            f"draft={draft_decision!r} → reflected={reflected_decision!r}\n"
+                        )
+                    else:
+                        emit(
+                            "=== Reflection outcome ===\n"
+                            f"draft validated: {draft_decision!r}\n"
+                        )
+                    decision = reflected_decision
+                    reason = reflected.get("reason") or reason
+                emit(f"Final Decision: {decision}")
+                emit(f"Reason: {reason}\n")
+            else:
                 emit(f"Final Decision: {decision}")
                 emit(f"Reason: {reason}\n")
 
-            if enable_reflection and decision:
-                draft = f"Final Decision: {decision}\nReason: {reason}"
-                reflected = reflect_stub(draft, "\n\n".join(observations_log))
-                if reflected:
-                    emit("=== Reflection (Phase 6) ===")
-                    emit(reflected)
-
-            trace_path = _save_trace(user_prompt, trace_lines, decision)
-            emit(f"=== Trace saved ===\n{trace_path}")
+            saved = _save_trace(
+                user_prompt,
+                trace_lines,
+                decision,
+                path=trace_path,
+                extra_header={
+                    **({"scenario": scenario_id} if scenario_id else {}),
+                    "draft_decision": str(draft_decision),
+                    "reflection": "on" if enable_reflection else "off",
+                },
+            )
+            emit(f"=== Trace saved ===\n{saved}")
 
             return {
                 "decision": decision,
                 "reason": reason,
-                "trace_path": str(trace_path),
+                "draft_decision": draft_decision,
+                "draft_reason": draft_reason,
+                "reflection": reflection_note,
+                "tools_called": tools_called,
+                "trace_path": str(saved),
                 "steps": step,
             }
 
@@ -298,11 +461,29 @@ def main() -> None:
     )
     parser.add_argument(
         "--reflect",
-        action="store_true",
-        help="Enable Phase 6 reflection hook (stub unless implemented)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run Phase 6 reflection after the draft (default: on)",
+    )
+    parser.add_argument(
+        "--inject-draft",
+        default=None,
+        help="Replace draft with this text before reflection (demo correction)",
+    )
+    parser.add_argument(
+        "--trace-path",
+        default=None,
+        help="Optional path to write the trace file",
     )
     args = parser.parse_args()
-    result = asyncio.run(run_agent(args.prompt, enable_reflection=args.reflect))
+    result = asyncio.run(
+        run_agent(
+            args.prompt,
+            enable_reflection=args.reflect,
+            inject_draft=args.inject_draft,
+            trace_path=Path(args.trace_path) if args.trace_path else None,
+        )
+    )
     if not result.get("decision"):
         raise SystemExit(1)
 
