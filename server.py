@@ -38,6 +38,30 @@ def get_employee_info(employee_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def find_employee(name: str, role: str = "") -> dict[str, Any]:
+    """Resolve EMP-### from a person's name and optional department/role.
+
+    Problem this solves: users often identify themselves by name and department
+    instead of employee_id. Other tools require EMP-### and must not receive a
+    display name as employee_id.
+
+    When to call: at the start when the request has a name (e.g. "Alex Rivera")
+    and/or department but no EMP-###. Then call get_employee_info with the
+    returned employee_id. Claimed department only disambiguates; record role wins.
+
+    Args:
+        name: Full or partial employee name, e.g. "Alex Rivera".
+        role: Optional claimed department/role (Engineering, Sales, Operations,
+              Management). Pass "" if unknown.
+
+    Returns:
+        Success: {ok, employee_id, name, role, matched_by, note}.
+        Failure: {ok: false, error, message, candidates?} if missing/ambiguous.
+    """
+    return bl.find_employee(name, role or None)
+
+
+@mcp.tool()
 def get_policy_limits(role: str) -> dict[str, Any]:
     """Fetch per-item quantity and frequency limits for a job role.
 

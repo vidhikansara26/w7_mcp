@@ -5,3 +5,5 @@ __pycache__/
 venv/
 .env
 data/escalations.jsonl
+# Keep traces/.gitkeep; commit curated scenario traces intentionally later.
+traces/*.txt
