@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /workspace/mcp/w7_mcp/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /workspace/mcp/w7_mcp
+plugins: anyio-4.15.1
+collecting ... collected 18 items
+
+test_business_logic.py::test_get_employee_info_valid_engineering PASSED  [  5%]
+test_business_logic.py::test_get_employee_info_nonexistent PASSED        [ 11%]
+test_business_logic.py::test_get_employee_info_invalid_id PASSED         [ 16%]
+test_business_logic.py::test_find_employee_by_name_and_role PASSED       [ 22%]
+test_business_logic.py::test_find_employee_name_only PASSED              [ 27%]
+test_business_logic.py::test_find_employee_not_found PASSED              [ 33%]
+test_business_logic.py::test_get_policy_limits_engineering PASSED        [ 38%]
+test_business_logic.py::test_get_policy_limits_unknown_role PASSED       [ 44%]
+test_business_logic.py::test_eligible_approve_engineering_laptop_four_years PASSED [ 50%]
+test_business_logic.py::test_deny_sales_laptop_six_months PASSED         [ 55%]
+test_business_logic.py::test_exceeds_frequency_early_engineering_for_agent_escalation PASSED [ 61%]
+test_business_logic.py::test_non_standard_item_escalate_hint PASSED      [ 66%]
+test_business_logic.py::test_missing_tenure_data_escalate PASSED         [ 72%]
+test_business_logic.py::test_eligibility_invalid_employee PASSED         [ 77%]
+test_business_logic.py::test_management_chair_never_owned_approve PASSED [ 83%]
+test_business_logic.py::test_management_second_monitor_under_max_qty PASSED [ 88%]
+test_business_logic.py::test_flag_for_human_review_queue_and_timestamp PASSED [ 94%]
+test_business_logic.py::test_flag_for_human_review_requires_fields PASSED [100%]
+
+============================== 18 passed in 0.01s ==============================
