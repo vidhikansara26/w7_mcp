@@ -76,6 +76,94 @@ def get_employee_info(employee_id: str) -> dict[str, Any]:
     }
 
 
+def find_employee(name: str, role: str | None = None) -> dict[str, Any]:
+    """Resolve an employee_id from a person's name and optional claimed role/department.
+
+    Role is used only to disambiguate matches. The returned record's role remains
+    authoritative for policy (claimed department may differ).
+    """
+    if not name or not isinstance(name, str):
+        return _error("invalid_name", "name must be a non-empty string")
+
+    needle = " ".join(name.strip().lower().split())
+    claimed_role = None
+    if role and isinstance(role, str) and role.strip():
+        claimed_role = role.strip()
+        if claimed_role == "Manager":
+            claimed_role = "Management"
+
+    matches: list[dict[str, Any]] = []
+    for record in _employees().values():
+        record_name = " ".join(str(record.get("name", "")).lower().split())
+        if record_name != needle and needle not in record_name:
+            continue
+        matches.append(
+            {
+                "employee_id": record["employee_id"],
+                "name": record.get("name"),
+                "role": record["role"],
+            }
+        )
+
+    if not matches:
+        return _error(
+            "employee_not_found",
+            f"No employee found matching name {name!r}",
+            name=name,
+            role=claimed_role,
+        )
+
+    if claimed_role:
+        role_matches = [m for m in matches if m["role"] == claimed_role]
+        if len(role_matches) == 1:
+            chosen = role_matches[0]
+            return {
+                "ok": True,
+                "employee_id": chosen["employee_id"],
+                "name": chosen["name"],
+                "role": chosen["role"],
+                "matched_by": "name+role",
+                "note": (
+                    "Use this employee_id with get_employee_info / "
+                    "check_request_eligibility. Record role is authoritative."
+                ),
+            }
+        if not role_matches:
+            return {
+                "ok": False,
+                "error": "role_mismatch",
+                "message": (
+                    f"Found name match(es) but none with role {claimed_role!r}. "
+                    "Do not invent an id; ask the user to confirm or escalate."
+                ),
+                "name": name,
+                "claimed_role": claimed_role,
+                "candidates": matches,
+            }
+
+    if len(matches) == 1:
+        chosen = matches[0]
+        return {
+            "ok": True,
+            "employee_id": chosen["employee_id"],
+            "name": chosen["name"],
+            "role": chosen["role"],
+            "matched_by": "name",
+            "note": (
+                "Use this employee_id with get_employee_info / "
+                "check_request_eligibility. Record role is authoritative."
+            ),
+        }
+
+    return {
+        "ok": False,
+        "error": "ambiguous_match",
+        "message": "Multiple employees match that name; provide role or employee_id.",
+        "name": name,
+        "candidates": matches,
+    }
+
+
 def get_policy_limits(role: str) -> dict[str, Any]:
     """Return per-item max quantity and min years for a role."""
     if not role or not isinstance(role, str):

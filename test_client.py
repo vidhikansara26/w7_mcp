@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 
 EXPECTED_TOOLS = {
     "get_employee_info",
+    "find_employee",
     "get_policy_limits",
     "check_request_eligibility",
     "flag_for_human_review",

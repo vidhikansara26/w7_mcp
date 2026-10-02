@@ -55,6 +55,25 @@ def test_get_employee_info_invalid_id():
     assert result["error"] == "invalid_employee_id"
 
 
+def test_find_employee_by_name_and_role():
+    result = bl.find_employee("Alex Rivera", "Engineering")
+    assert result["ok"] is True
+    assert result["employee_id"] == "EMP-101"
+    assert result["role"] == "Engineering"
+
+
+def test_find_employee_name_only():
+    result = bl.find_employee("Jordan Lee")
+    assert result["ok"] is True
+    assert result["employee_id"] == "EMP-102"
+
+
+def test_find_employee_not_found():
+    result = bl.find_employee("Nobody Here")
+    assert result["ok"] is False
+    assert result["error"] == "employee_not_found"
+
+
 # --- get_policy_limits ---
 
 
