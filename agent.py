@@ -50,6 +50,19 @@ def _max_steps() -> int:
     return int(os.getenv("AGENT_MAX_STEPS", "8"))
 
 
+EMP_ID_RE = re.compile(r"\bEMP-\d+\b", re.IGNORECASE)
+
+
+def extract_explicit_employee_id(text: str) -> str | None:
+    """Return the first EMP-### in the prompt, or None if absent."""
+    match = EMP_ID_RE.search(text or "")
+    if not match:
+        return None
+    # Normalize to EMP-### uppercase prefix.
+    raw = match.group(0)
+    return "EMP-" + raw.split("-", 1)[1]
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     match = ACTION_RE.search(text)
     raw = match.group(1).strip() if match else None
@@ -259,6 +272,7 @@ async def run_agent(
     tools_called: list[str] = []
     policy_decision: str | None = None
     policy_rule: str | None = None
+    explicit_emp_id = extract_explicit_employee_id(user_prompt)
 
     def emit(block: str) -> None:
         print(block, flush=True)
@@ -270,12 +284,25 @@ async def run_agent(
             tools = (await session.list_tools()).tools
             known = {t.name for t in tools}
             system_prompt = build_system_prompt(tools)
+            user_content = user_prompt
+            if explicit_emp_id:
+                user_content = (
+                    f"{user_prompt}\n\n"
+                    f"[HOST HINT] Explicit employee_id {explicit_emp_id} is present. "
+                    f"Use get_employee_info/evaluate_request with {explicit_emp_id}. "
+                    f"Do not call find_employee."
+                )
             messages: list[dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ]
 
             emit(f"=== User request ===\n{user_prompt}\n")
+            if explicit_emp_id:
+                emit(
+                    f"=== Host EMP-id lock ===\n"
+                    f"Using explicit {explicit_emp_id}; find_employee blocked.\n"
+                )
             emit(
                 f"=== MCP tools ({len(tools)}) ===\n"
                 + ", ".join(t.name for t in tools)
@@ -334,6 +361,36 @@ async def run_agent(
                     continue
 
                 emit(f"Action: {json.dumps({'tool': tool, 'arguments': arguments})}")
+
+                # Prefer explicit EMP-### from the prompt over name lookup.
+                if tool == "find_employee" and explicit_emp_id:
+                    observation = (
+                        f"Blocked find_employee: prompt already contains "
+                        f"{explicit_emp_id}. Do not resolve by name. "
+                        f'Next call get_employee_info with employee_id="{explicit_emp_id}", '
+                        f"then evaluate_request with the same id."
+                    )
+                    tools_called.append(tool)
+                    observations_log.append(f"{tool}: {observation}")
+                    emit(f"Observation:\n{observation}\n")
+                    messages.append({"role": "user", "content": f"Observation from {tool}:\n{observation}"})
+                    continue
+
+                # If a tool is called with a wrong employee_id while EMP is locked, rewrite.
+                if (
+                    explicit_emp_id
+                    and isinstance(arguments, dict)
+                    and "employee_id" in arguments
+                    and str(arguments.get("employee_id", "")).strip().upper()
+                    != explicit_emp_id.upper()
+                ):
+                    arguments = dict(arguments)
+                    arguments["employee_id"] = explicit_emp_id
+                    emit(
+                        f"[HOST] Rewrote employee_id → {explicit_emp_id} "
+                        f"(explicit id in prompt wins).\n"
+                    )
+
                 tools_called.append(tool)
 
                 result = await session.call_tool(tool, arguments)

@@ -771,6 +771,19 @@ def _max_steps() -> int:
     return int(os.getenv("AGENT_MAX_STEPS", "8"))
 
 
+EMP_ID_RE = re.compile(r"\bEMP-\d+\b", re.IGNORECASE)
+
+
+def extract_explicit_employee_id(text: str) -> str | None:
+    """Return the first EMP-### in the prompt, or None if absent."""
+    match = EMP_ID_RE.search(text or "")
+    if not match:
+        return None
+    # Normalize to EMP-### uppercase prefix.
+    raw = match.group(0)
+    return "EMP-" + raw.split("-", 1)[1]
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     match = ACTION_RE.search(text)
     raw = match.group(1).strip() if match else None
@@ -980,6 +993,7 @@ async def run_agent(
     tools_called: list[str] = []
     policy_decision: str | None = None
     policy_rule: str | None = None
+    explicit_emp_id = extract_explicit_employee_id(user_prompt)
 
     def emit(block: str) -> None:
         print(block, flush=True)
@@ -991,12 +1005,25 @@ async def run_agent(
             tools = (await session.list_tools()).tools
             known = {t.name for t in tools}
             system_prompt = build_system_prompt(tools)
+            user_content = user_prompt
+            if explicit_emp_id:
+                user_content = (
+                    f"{user_prompt}\n\n"
+                    f"[HOST HINT] Explicit employee_id {explicit_emp_id} is present. "
+                    f"Use get_employee_info/evaluate_request with {explicit_emp_id}. "
+                    f"Do not call find_employee."
+                )
             messages: list[dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ]
 
             emit(f"=== User request ===\n{user_prompt}\n")
+            if explicit_emp_id:
+                emit(
+                    f"=== Host EMP-id lock ===\n"
+                    f"Using explicit {explicit_emp_id}; find_employee blocked.\n"
+                )
             emit(
                 f"=== MCP tools ({len(tools)}) ===\n"
                 + ", ".join(t.name for t in tools)
@@ -1055,6 +1082,36 @@ async def run_agent(
                     continue
 
                 emit(f"Action: {json.dumps({'tool': tool, 'arguments': arguments})}")
+
+                # Prefer explicit EMP-### from the prompt over name lookup.
+                if tool == "find_employee" and explicit_emp_id:
+                    observation = (
+                        f"Blocked find_employee: prompt already contains "
+                        f"{explicit_emp_id}. Do not resolve by name. "
+                        f'Next call get_employee_info with employee_id="{explicit_emp_id}", '
+                        f"then evaluate_request with the same id."
+                    )
+                    tools_called.append(tool)
+                    observations_log.append(f"{tool}: {observation}")
+                    emit(f"Observation:\n{observation}\n")
+                    messages.append({"role": "user", "content": f"Observation from {tool}:\n{observation}"})
+                    continue
+
+                # If a tool is called with a wrong employee_id while EMP is locked, rewrite.
+                if (
+                    explicit_emp_id
+                    and isinstance(arguments, dict)
+                    and "employee_id" in arguments
+                    and str(arguments.get("employee_id", "")).strip().upper()
+                    != explicit_emp_id.upper()
+                ):
+                    arguments = dict(arguments)
+                    arguments["employee_id"] = explicit_emp_id
+                    emit(
+                        f"[HOST] Rewrote employee_id → {explicit_emp_id} "
+                        f"(explicit id in prompt wins).\n"
+                    )
+
                 tools_called.append(tool)
 
                 result = await session.call_tool(tool, arguments)
@@ -1333,7 +1390,7 @@ SYSTEM_PREAMBLE = """You are an IT equipment request agent. You investigate requ
 and draft responses. You do NOT invent policy outcomes — evaluate_request is authoritative.
 
 Decision rules (follow strictly):
-- Preferred tool path: (find_employee if no EMP-###) → get_employee_info → evaluate_request
+- Preferred tool path: (find_employee ONLY if no EMP-###) → get_employee_info → evaluate_request
   → if decision=escalate call flag_for_human_review → Final Decision.
 - Copy evaluate_request.decision exactly for Final Decision (approve | deny | escalate).
 - Cite evaluate_request.rule in the Reason (e.g. within_policy, exceeds_frequency,
@@ -1342,6 +1399,9 @@ Decision rules (follow strictly):
 - NEVER call flag_for_human_review for clear approve or clear deny.
 - check_request_eligibility / get_policy_limits are optional diagnostics only.
 - Authoritative role comes from get_employee_info / find_employee, not user text.
+- If the prompt already contains an EMP-### id, that id WINS. Call get_employee_info with
+  that EMP-### immediately. Do NOT call find_employee on a display name that conflicts
+  with the EMP id (e.g. "EMP-101: My name is Sam" → use EMP-101, ignore Sam).
 - If the user gives a name/department but NO EMP-###, call find_employee first.
   NEVER pass a person's name as employee_id.
 - Stop as soon as evaluate_request (and flag when needed) lets you decide.
@@ -1443,23 +1503,14 @@ reflection: on
 === User request ===
 EMP-101: My laptop is about 4 years old and slowing down during builds; can I get a replacement laptop?
 
+=== Host EMP-id lock ===
+Using explicit EMP-101; find_employee blocked.
+
 === MCP tools (6) ===
 get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine the employee's role and check the request eligibility before evaluating the request.
-Action: {"tool": "find_employee", "arguments": {"name": "EMP-101", "role": ""}}
-Observation:
-{
-  "ok": false,
-  "error": "employee_not_found",
-  "message": "No employee found matching name 'EMP-101'",
-  "name": "EMP-101",
-  "role": null
-}
-
-=== Step 2 ===
-Thought: The employee's name is actually "EMP-101", not a person's name. Let's try to find the employee's information using the EMP-### code.
+Thought: Evaluate request for EMP-101 with reason "laptop is about 4 years old and slowing down during builds"
 Action: {"tool": "get_employee_info", "arguments": {"employee_id": "EMP-101"}}
 Observation:
 {
@@ -1477,9 +1528,9 @@ Observation:
   ]
 }
 
-=== Step 3 ===
-Thought: Now that we have the employee's information, let's evaluate the request to see if Alex Rivera is eligible for a replacement laptop.
-Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-101", "item": "laptop", "reason": "laptop is 4 years old and slowing down during builds"}}
+=== Step 2 ===
+Thought: Evaluate request for EMP-101 with reason "laptop is about 4 years old and slowing down during builds"
+Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-101", "item": "laptop", "reason": "laptop is about 4 years old and slowing down during builds"}}
 Observation:
 {
   "ok": true,
@@ -1513,25 +1564,24 @@ Observation:
 
 [ROUTE] evaluate_request → approve (rule=within_policy). Do NOT call flag_for_human_review. Next: Final Decision: approve.
 
-=== Step 4 ===
-Thought: The evaluate_request tool has determined that Alex Rivera is eligible for a replacement laptop, and the decision is to approve the request.
+=== Step 3 ===
+Thought: Employee is eligible for a new laptop as their current one is about 4 years old and slowing down during builds, which meets the 3-year minimum for the Engineering role.
 Draft Final Decision: approve
-Draft Reason: within_policy, last laptop issued 2022-09-01; 4.08 years elapsed meets 3-year Engineering minimum.
+Draft Reason: within_policy, Last laptop issued 2022-09-01; 4.08 years elapsed meets 3-year Engineering minimum.
 
 === Reflection ===
-Reflection: The draft decision conflicted with evaluate_request.decision. The tool observations showed that the employee was not found, which means the request was not properly evaluated. I corrected the draft to match evaluate_request.decision and cited evaluate_request.rule.
-
-Final Decision: deny
-Reason: within_policy, employee_not_found (citing evaluate_request.rule)
-
-=== Reflection outcome ===
-draft='approve' → reflected='deny'
-
-=== Decision lock ===
-Snapping 'deny' → 'approve' (evaluate_request rule=within_policy).
+Reflection: 
+- The draft decision's reason included an invented date ("2022-09-01") which was not present in the tool observations. The correct date was retrieved from get_employee_info.
+- The draft decision's reason also included a policy number ("3-year Engineering minimum") which was not present in the evaluate_request. The correct reason should cite evaluate_request.rule.
 
 Final Decision: approve
-Reason: within_policy, employee_not_found (citing evaluate_request.rule)
+Reason: within_policy, 4.08 years elapsed meets 3-year Engineering minimum.
+
+=== Reflection outcome ===
+draft validated: 'approve'
+
+Final Decision: approve
+Reason: within_policy, 4.08 years elapsed meets 3-year Engineering minimum.
 ```
 
 
@@ -1551,12 +1601,34 @@ reflection: on
 === User request ===
 EMP-102: I am in Sales. My laptop is only about 6 months old and I want a second/replacement laptop because mine feels slow in meetings. No damage.
 
+=== Host EMP-id lock ===
+Using explicit EMP-102; find_employee blocked.
+
 === MCP tools (6) ===
 get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine if the employee is eligible for a replacement laptop and if the request is within policy.
-Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-102", "item": "laptop", "reason": "slow performance"}}
+Thought: Evaluate request with EMP-102 to determine eligibility and decision
+Action: {"tool": "get_employee_info", "arguments": {"employee_id": "EMP-102"}}
+Observation:
+{
+  "ok": true,
+  "employee_id": "EMP-102",
+  "name": "Jordan Lee",
+  "role": "Sales",
+  "hire_date": "2023-01-10",
+  "inventory": [
+    {
+      "item": "laptop",
+      "issued_date": "2026-04-01",
+      "asset_tag": "LT-102"
+    }
+  ]
+}
+
+=== Step 2 ===
+Thought: Evaluate request with EMP-102 to determine eligibility and decision
+Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-102", "item": "laptop", "reason": "replacement"}}
 Observation:
 {
   "ok": true,
@@ -1591,23 +1663,25 @@ Observation:
 
 [ROUTE] evaluate_request → deny (rule=exceeds_frequency). Do NOT call flag_for_human_review. Next: Final Decision: deny.
 
-=== Step 2 ===
-Thought: The request is denied due to exceeding the frequency limit for laptops in the Sales role.
+=== Step 3 ===
+Thought: The request exceeds the frequency policy for the Sales role, and there is no exceptional justification provided.
 Draft Final Decision: deny
-Draft Reason: exceeds_frequency, last laptop issued 2026-04-01, only 0.50 years elapsed, policy requires 4 for Sales.
+Draft Reason: exceeds_frequency, last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
 
 === Reflection ===
 Reflection: 
-- The draft decision was correct, but the reason was not entirely accurate. The policy requires 4 years for Sales, but the tool observations indicate that the last laptop was issued 2026-04-01 and only 0.50 years have elapsed. The correct reason should cite evaluate_request.rule and include the exact policy requirement.
+- The draft decision conflicts with evaluate_request.decision, which is also "deny". 
+- The draft incorrectly invents a date (2026-04-01) and policy number, which should be replaced with tool observations.
+- The decision is correct, but the reason needs improvement to match evaluate_request.rule.
 
 Final Decision: deny
-Reason: exceeds_frequency, policy requires 4 years for Sales, last laptop issued 2026-04-01, only 0.50 years elapsed.
+Reason: exceeds_frequency, last laptop issued 2023-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
 
 === Reflection outcome ===
 draft validated: 'deny'
 
 Final Decision: deny
-Reason: exceeds_frequency, policy requires 4 years for Sales, last laptop issued 2026-04-01, only 0.50 years elapsed.
+Reason: exceeds_frequency, last laptop issued 2023-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
 ```
 
 
@@ -1627,11 +1701,33 @@ reflection: on
 === User request ===
 EMP-103: I am in Engineering. My laptop was issued about a year ago but the screen was crushed on a client site / stolen bag incident — broken screen. I need an early replacement.
 
+=== Host EMP-id lock ===
+Using explicit EMP-103; find_employee blocked.
+
 === MCP tools (6) ===
 get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine employee's eligibility for early replacement and check policy limits for Engineering role.
+Thought: Evaluate request for EMP-103 with broken laptop screen
+Action: {"tool": "get_employee_info", "arguments": {"employee_id": "EMP-103"}}
+Observation:
+{
+  "ok": true,
+  "employee_id": "EMP-103",
+  "name": "Sam Chen",
+  "role": "Engineering",
+  "hire_date": "2021-06-01",
+  "inventory": [
+    {
+      "item": "laptop",
+      "issued_date": "2025-10-01",
+      "asset_tag": "LT-103"
+    }
+  ]
+}
+
+=== Step 2 ===
+Thought: Evaluate request for EMP-103 with broken laptop screen
 Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-103", "item": "laptop", "reason": "broken screen"}}
 Observation:
 {
@@ -1668,41 +1764,43 @@ Observation:
 
 [ROUTE] evaluate_request → escalate (rule=early_refresh_exceptional). Next: call flag_for_human_review, then Final Decision: escalate.
 
-=== Step 2 ===
-Thought: The request has been escalated due to exceptional justification, so we need to flag it for human review.
-Action: {"tool": "flag_for_human_review", "arguments": {"employee_id": "EMP-103", "request": "laptop replacement due to broken screen", "reason": "early_refresh_exceptional"}}
+=== Step 3 ===
+Thought: Employee's laptop screen was crushed on a client site / stolen bag incident, which is an exceptional justification for an early replacement
+Action: {"tool": "flag_for_human_review", "arguments": {"employee_id": "EMP-103", "request": "laptop replacement due to broken screen", "reason": "exceptional justification for early replacement"}}
 Observation:
 {
   "ok": true,
   "flagged": true,
   "queue_size": 1,
   "entry": {
-    "timestamp": "2026-10-02T18:35:18.505224+00:00",
+    "timestamp": "2026-10-02T20:08:45.767819+00:00",
     "employee_id": "EMP-103",
     "request": "laptop replacement due to broken screen",
-    "reason": "early_refresh_exceptional"
+    "reason": "exceptional justification for early replacement"
   },
   "message": "Request flagged for human review."
 }
 
-=== Step 3 ===
-Thought: The request has been flagged for human review, and we can now make a final decision based on the escalate decision from evaluate_request.
+=== Step 4 ===
+Thought: Request has been flagged for human review
 Draft Final Decision: escalate
 Draft Reason: early_refresh_exceptional
 
 === Reflection ===
 Reflection: 
-- The draft decision was correct, but I needed to ensure that the decision matched evaluate_request.decision and cite evaluate_request.rule.
-- The draft decision was to escalate, which is correct according to evaluate_request.decision. I also needed to include flag_for_human_review in the observations, which was missing.
+- The draft decision conflicted with evaluate_request.decision, which is authoritative. 
+- The draft decision was corrected to match evaluate_request.decision, which is escalate. 
+- The draft decision was missing flag_for_human_review, which is required for decision=escalate. 
+- The Reason prose was improved to cite evaluate_request.rule.
 
 Final Decision: escalate
-Reason: escalate via flag_for_human_review (citing evaluate_request.rule: "next_action": "flag_for_human_review")
+Reason: escalate via flag_for_human_review due to evaluate_request.rule "exceptional justification for early replacement"
 
 === Reflection outcome ===
 draft validated: 'escalate'
 
 Final Decision: escalate
-Reason: escalate via flag_for_human_review (citing evaluate_request.rule: "next_action": "flag_for_human_review")
+Reason: escalate via flag_for_human_review due to evaluate_request.rule "exceptional justification for early replacement"
 ```
 
 
@@ -1722,23 +1820,14 @@ reflection: on
 === User request ===
 EMP-104: I am in Management. Please order an ergonomic split keyboard (or standing desk) — not a standard catalog laptop/monitor/chair.
 
+=== Host EMP-id lock ===
+Using explicit EMP-104; find_employee blocked.
+
 === MCP tools (6) ===
 get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine employee's role and check policy limits for non-standard items.
-Action: {"tool": "find_employee", "arguments": {"name": "EMP-104", "role": "Management"}}
-Observation:
-{
-  "ok": false,
-  "error": "employee_not_found",
-  "message": "No employee found matching name 'EMP-104'",
-  "name": "EMP-104",
-  "role": "Management"
-}
-
-=== Step 2 ===
-Thought: Since the EMP-### was provided, try to look up the employee's information directly.
+Thought: Evaluate request for EMP-104 with non-standard item request
 Action: {"tool": "get_employee_info", "arguments": {"employee_id": "EMP-104"}}
 Observation:
 {
@@ -1756,8 +1845,8 @@ Observation:
   ]
 }
 
-=== Step 3 ===
-Thought: Now that we have the employee's information, let's evaluate the request.
+=== Step 2 ===
+Thought: Evaluate request for EMP-104 with non-standard item request
 Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-104", "item": "ergonomic split keyboard", "reason": "non_standard_item"}}
 Observation:
 {
@@ -1788,8 +1877,8 @@ Observation:
 
 [ROUTE] evaluate_request → escalate (rule=non_standard_item). Next: call flag_for_human_review, then Final Decision: escalate.
 
-=== Step 4 ===
-Thought: Since the request was escalated, we need to flag it for human review.
+=== Step 3 ===
+Thought: Employee has exceeded standard item limits, requires human review
 Action: {"tool": "flag_for_human_review", "arguments": {"employee_id": "EMP-104", "request": "ergonomic split keyboard", "reason": "non_standard_item"}}
 Observation:
 {
@@ -1797,7 +1886,7 @@ Observation:
   "flagged": true,
   "queue_size": 1,
   "entry": {
-    "timestamp": "2026-10-02T18:35:35.014359+00:00",
+    "timestamp": "2026-10-02T20:08:58.998363+00:00",
     "employee_id": "EMP-104",
     "request": "ergonomic split keyboard",
     "reason": "non_standard_item"
@@ -1805,26 +1894,24 @@ Observation:
   "message": "Request flagged for human review."
 }
 
-=== Step 5 ===
-Thought: The request has been flagged for human review, and we can now make a final decision based on the escalate decision from evaluate_request.
+=== Step 4 ===
+Thought: Request has been flagged for human review
 Draft Final Decision: escalate
 Draft Reason: non_standard_item
 
 === Reflection ===
 Reflection: 
-- The draft decision conflicted with evaluate_request.decision, which is authoritative. 
-- The draft decision was corrected to match evaluate_request.decision, which is escalate. 
-- The reason was updated to cite evaluate_request.rule, which is non_standard_item. 
-- Since the decision is escalate, flag_for_human_review was included in the observations. 
+- The draft decision was correct in escalating the request, but the reason was not fully accurate. The tool observations and evaluate_request both indicate that the item is not on the standard catalog, but the reason provided in the draft decision was too vague.
+- The draft decision was missing the required flag_for_human_review observation when decision=escalate.
 
 Final Decision: escalate
-Reason: non_standard_item (evaluate_request.rule)
+Reason: non_standard_item (citing evaluate_request.rule)
 
 === Reflection outcome ===
 draft validated: 'escalate'
 
 Final Decision: escalate
-Reason: non_standard_item (evaluate_request.rule)
+Reason: non_standard_item (citing evaluate_request.rule)
 ```
 
 
@@ -1846,11 +1933,14 @@ reflection: on
 === User request ===
 EMP-101: My laptop is about 4 years old and slowing down; can I get a replacement laptop?
 
+=== Host EMP-id lock ===
+Using explicit EMP-101; find_employee blocked.
+
 === MCP tools (6) ===
 get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine employee's role and check if they are eligible for a laptop replacement.
+Thought: Evaluate request with EMP-101
 Action: {"tool": "get_employee_info", "arguments": {"employee_id": "EMP-101"}}
 Observation:
 {
@@ -1869,36 +1959,8 @@ Observation:
 }
 
 === Step 2 ===
-Thought: Check if the employee is eligible for a laptop replacement based on the policy limits for their role.
-Action: {"tool": "get_policy_limits", "arguments": {"role": "Engineering"}}
-Observation:
-{
-  "ok": true,
-  "role": "Engineering",
-  "limits": {
-    "laptop": {
-      "max_qty": 1,
-      "min_years": 3
-    },
-    "monitor": {
-      "max_qty": 2,
-      "min_years": 2
-    },
-    "ergonomic_chair": {
-      "max_qty": 1,
-      "min_years": 5
-    }
-  },
-  "standard_items": [
-    "laptop",
-    "monitor",
-    "ergonomic_chair"
-  ]
-}
-
-=== Step 3 ===
-Thought: Evaluate the request to replace the laptop using the evaluate_request tool.
-Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-101", "item": "laptop", "reason": "equipment is about 4 years old and slowing down"}}
+Thought: Evaluate request with EMP-101 and laptop item
+Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-101", "item": "laptop", "reason": "laptop is about 4 years old and slowing down"}}
 Observation:
 {
   "ok": true,
@@ -1932,26 +1994,26 @@ Observation:
 
 [ROUTE] evaluate_request → approve (rule=within_policy). Do NOT call flag_for_human_review. Next: Final Decision: approve.
 
-=== Step 4 ===
-Thought: The evaluate_request tool has already determined that the request should be approved, and there is no need to escalate or flag for human review.
+=== Step 3 ===
+Thought: Employee is eligible for a new laptop within policy
 Draft Final Decision: approve
-Draft Reason: within_policy, Last laptop issued 2022-09-01; 4.08 years elapsed meets 3-year Engineering minimum.
+Draft Reason: within_policy; Last laptop issued 2022-09-01; 4.08 years elapsed meets 3-year Engineering minimum.
 
 === Injected bad draft (reflection demo) ===
 Final Decision: deny
 Reason: I am guessing the laptop is too new without trusting the tools.
 
 === Reflection ===
-Reflection: The draft decision conflicted with evaluate_request.decision, which is authoritative. The draft incorrectly stated that the laptop is too new, but the tool observations show that the laptop was issued in 2022, which is within the 3-year limit for the Engineering role.
+Reflection: The draft decision conflicted with evaluate_request.decision. The draft incorrectly stated that the laptop was too new, but the tool observations and evaluate_request indicate that the laptop was issued in 2022 and the employee is eligible for a replacement after 3 years, which has elapsed.
 
 Final Decision: approve
-Reason: The employee is eligible for a replacement laptop as per the "within_policy" rule, as the 4.08 years elapsed since the last laptop issue meets the 3-year Engineering minimum. (evaluate_request.rule)
+Reason: The employee is eligible for a replacement laptop as per the "within_policy" rule, as 4.08 years have elapsed since the last laptop was issued, meeting the 3-year minimum for the Engineering role. (evaluate_request.rule)
 
 === Reflection outcome ===
 draft='deny' → reflected='approve'
 
 Final Decision: approve
-Reason: The employee is eligible for a replacement laptop as per the "within_policy" rule, as the 4.08 years elapsed since the last laptop issue meets the 3-year Engineering minimum. (evaluate_request.rule)
+Reason: The employee is eligible for a replacement laptop as per the "within_policy" rule, as 4.08 years have elapsed since the last laptop was issued, meeting the 3-year minimum for the Engineering role. (evaluate_request.rule)
 ```
 
 Additional reflection validation also appears inside each scenario trace under the `=== Reflection ===` sections.
