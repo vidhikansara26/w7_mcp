@@ -4,90 +4,68 @@ host: http://host.docker.internal:11434
 decision: deny
 scenario: 02_deny
 draft_decision: deny
+policy_decision: deny
+policy_rule: exceeds_frequency
 reflection: on
 
 === User request ===
 EMP-102: I am in Sales. My laptop is only about 6 months old and I want a second/replacement laptop because mine feels slow in meetings. No damage.
 
-=== MCP tools (5) ===
-get_employee_info, find_employee, get_policy_limits, check_request_eligibility, flag_for_human_review
+=== MCP tools (6) ===
+get_employee_info, find_employee, get_policy_limits, check_request_eligibility, evaluate_request, flag_for_human_review
 
 === Step 1 ===
-Thought: Determine if the employee is eligible for a second laptop within the allowed frequency and quantity.
-Action: {"tool": "get_policy_limits", "arguments": {"role": "Sales"}}
+Thought: Determine if the employee is eligible for a replacement laptop and if the request is within policy.
+Action: {"tool": "evaluate_request", "arguments": {"employee_id": "EMP-102", "item": "laptop", "reason": "slow performance"}}
 Observation:
 {
   "ok": true,
-  "role": "Sales",
-  "limits": {
-    "laptop": {
+  "decision": "deny",
+  "rule": "exceeds_frequency",
+  "eligibility": {
+    "ok": true,
+    "eligible": false,
+    "decision_hint": "deny",
+    "exceeds_frequency": true,
+    "employee_id": "EMP-102",
+    "role": "Sales",
+    "item": "laptop",
+    "last_issued": "2026-04-01",
+    "next_eligible_date": "2030-04-01",
+    "owned_count": 1,
+    "policy": {
       "max_qty": 1,
       "min_years": 4
     },
-    "monitor": {
-      "max_qty": 1,
-      "min_years": 3
-    },
-    "ergonomic_chair": {
-      "max_qty": 1,
-      "min_years": 5
-    }
+    "years_since_last": 0.5,
+    "reasons": [
+      "Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales. Call evaluate_request with the free-text reason to apply exceptional-justification rules."
+    ]
   },
-  "standard_items": [
-    "laptop",
-    "monitor",
-    "ergonomic_chair"
-  ]
+  "reasons": [
+    "Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales. Call evaluate_request with the free-text reason to apply exceptional-justification rules.",
+    "No exceptional justification in reason; clear deny under frequency policy."
+  ],
+  "has_exceptional_justification": false
 }
+
+[ROUTE] evaluate_request → deny (rule=exceeds_frequency). Do NOT call flag_for_human_review. Next: Final Decision: deny.
 
 === Step 2 ===
-Thought: Check if the employee is eligible for a second laptop within the allowed frequency and quantity.
-Action: {"tool": "check_request_eligibility", "arguments": {"employee_id": "EMP-102", "item": "laptop"}}
-Observation:
-{
-  "ok": true,
-  "eligible": false,
-  "decision_hint": "deny",
-  "exceeds_frequency": true,
-  "employee_id": "EMP-102",
-  "role": "Sales",
-  "item": "laptop",
-  "last_issued": "2026-04-01",
-  "next_eligible_date": "2030-04-01",
-  "owned_count": 1,
-  "policy": {
-    "max_qty": 1,
-    "min_years": 4
-  },
-  "years_since_last": 0.5,
-  "reasons": [
-    "Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales. Agent may escalate if reason contains exceptional justification."
-  ]
-}
-
-=== Step 3 ===
-Thought: The employee's request for a second laptop exceeds the allowed frequency, but there is no exceptional justification provided.
-Action: {"tool": "deny", "arguments": {}}
-Observation:
-Unknown tool 'deny'. Valid tools: ['check_request_eligibility', 'find_employee', 'flag_for_human_review', 'get_employee_info', 'get_policy_limits']. If you are ready to decide, reply with Final Decision / Reason (not an Action).
-
-=== Step 4 ===
-Thought: The employee's request for a second laptop exceeds the allowed frequency, but there is no exceptional justification provided.
+Thought: The request is denied due to exceeding the frequency limit for laptops in the Sales role.
 Draft Final Decision: deny
-Draft Reason: Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
+Draft Reason: exceeds_frequency, last laptop issued 2026-04-01, only 0.50 years elapsed, policy requires 4 for Sales.
 
 === Reflection ===
 Reflection: 
-- The draft decision conflicts with the tool output for eligibility and policy. 
-- The tool output shows exceeds_frequency=true, which means the request should be denied unless there is exceptional justification. 
-- However, the user request does not mention any exceptional justification, so the draft decision is incorrect.
+- The draft decision was correct, but the reason was not entirely accurate. The policy requires 4 years for Sales, but the tool observations indicate that the last laptop was issued 2026-04-01 and only 0.50 years have elapsed. The correct reason should cite evaluate_request.rule and include the exact policy requirement.
 
 Final Decision: deny
-Reason: Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
+Reason: exceeds_frequency, policy requires 4 years for Sales, last laptop issued 2026-04-01, only 0.50 years elapsed.
 
 === Reflection outcome ===
 draft validated: 'deny'
 
 Final Decision: deny
-Reason: Request exceeds frequency: last laptop issued 2026-04-01; only 0.50 years elapsed, policy requires 4 for Sales.
+Reason: exceeds_frequency, policy requires 4 years for Sales, last laptop issued 2026-04-01, only 0.50 years elapsed.
 

@@ -1,0 +1,7 @@
+Connecting to Minimal-Ping-Server over stdio...
+=== Handshake (initialize) ===
+Protocol: 2025-11-25
+Server:   Minimal-Ping-Server
+Registered tools: ['ping']
+ping() -> pong
+Minimal one-tool server/client connection confirmed.

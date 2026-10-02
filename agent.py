@@ -192,31 +192,23 @@ def _save_trace(
     return path
 
 
-_EXCEPTIONAL_PHRASES = (
-    "damaged",
-    "crushed",
-    "stolen",
-    "broken screen",
-    "client site",
-)
-
-
-def _has_exceptional_justification(text: str) -> bool:
-    lowered = text.lower()
-    return any(p in lowered for p in _EXCEPTIONAL_PHRASES)
-
-
-def _mentions_nonstandard(text: str) -> bool:
-    lowered = text.lower()
-    markers = (
-        "standing desk",
-        "split keyboard",
-        "mechanical keyboard",
-        "non-standard",
-        "nonstandard",
-        "ergonomic split",
-    )
-    return any(m in lowered for m in markers)
+def _parse_tool_payload(observation: str) -> dict[str, Any] | None:
+    """Best-effort parse of a tool observation that is JSON (possibly pretty-printed)."""
+    text = observation.strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
 
 
 def run_reflection(
@@ -265,6 +257,8 @@ async def run_agent(
     trace_lines: list[str] = []
     observations_log: list[str] = []
     tools_called: list[str] = []
+    policy_decision: str | None = None
+    policy_rule: str | None = None
 
     def emit(block: str) -> None:
         print(block, flush=True)
@@ -274,6 +268,7 @@ async def run_agent(
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
+            known = {t.name for t in tools}
             system_prompt = build_system_prompt(tools)
             messages: list[dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
@@ -324,15 +319,15 @@ async def run_agent(
                     emit(f"Draft Reason: {reason}\n")
                     break
 
-                tool = parsed["tool"]
+                tool = str(parsed["tool"])
                 arguments = parsed["arguments"]
-                known = {t.name for t in tools}
                 if tool not in known:
                     emit(f"Action: {json.dumps({'tool': tool, 'arguments': arguments})}")
                     observation = (
                         f"Unknown tool {tool!r}. Valid tools: {sorted(known)}. "
-                        "If you are ready to decide, reply with Final Decision / Reason "
-                        "(not an Action)."
+                        "Final Decision is NOT a tool — never Action tool=deny/approve/"
+                        "escalate. If evaluate_request already returned, reply with "
+                        "Final Decision / Reason (or flag_for_human_review if escalate)."
                     )
                     emit(f"Observation:\n{observation}\n")
                     messages.append({"role": "user", "content": observation})
@@ -345,15 +340,43 @@ async def run_agent(
                 observation = _observation_text(result)
                 observations_log.append(f"{tool}: {observation}")
                 emit(f"Observation:\n{observation}\n")
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Observation from {tool}:\n{observation}",
-                    }
-                )
+
+                route_note = ""
+                if tool == "evaluate_request":
+                    payload = _parse_tool_payload(observation)
+                    if payload and payload.get("decision") in {
+                        "approve",
+                        "deny",
+                        "escalate",
+                    }:
+                        policy_decision = str(payload["decision"])
+                        policy_rule = str(payload.get("rule") or "")
+                        if policy_decision == "escalate":
+                            route_note = (
+                                f"[ROUTE] evaluate_request → escalate "
+                                f"(rule={policy_rule}). "
+                                "Next: call flag_for_human_review, then Final Decision: escalate."
+                            )
+                        else:
+                            route_note = (
+                                f"[ROUTE] evaluate_request → {policy_decision} "
+                                f"(rule={policy_rule}). "
+                                f"Do NOT call flag_for_human_review. "
+                                f"Next: Final Decision: {policy_decision}."
+                            )
+                        emit(route_note + "\n")
+
+                user_obs = f"Observation from {tool}:\n{observation}"
+                if route_note:
+                    user_obs += f"\n{route_note}"
+                messages.append({"role": "user", "content": user_obs})
             else:
-                decision = "escalate"
-                reason = f"Exceeded max steps ({_max_steps()}); escalate rather than guess."
+                decision = policy_decision or "escalate"
+                reason = (
+                    f"Exceeded max steps ({_max_steps()}); "
+                    f"using evaluate_request={policy_decision!r} "
+                    f"(rule={policy_rule}) or escalate."
+                )
                 emit(f"Draft Final Decision: {decision}")
                 emit(f"Draft Reason: {reason}\n")
 
@@ -382,29 +405,6 @@ async def run_agent(
                 reflection_note = reflected.get("reflection") or ""
                 if reflected.get("decision"):
                     reflected_decision = reflected["decision"]
-                    # Guard: do not let reflection undo a correct escalate after flagging.
-                    flagged = "flag_for_human_review" in tools_called
-                    if (
-                        reflected_decision == "deny"
-                        and flagged
-                        and (
-                            _has_exceptional_justification(user_prompt)
-                            or _mentions_nonstandard(user_prompt)
-                            or draft_decision == "escalate"
-                        )
-                    ):
-                        emit(
-                            "=== Reflection guard ===\n"
-                            "Keeping escalate: flag_for_human_review was called and the "
-                            "request is non-standard or has exceptional justification.\n"
-                        )
-                        reflected_decision = "escalate"
-                        if not reflected.get("reason"):
-                            reflected["reason"] = (
-                                "Escalated after flag_for_human_review for "
-                                "non-standard item or exceptional early-refresh justification."
-                            )
-
                     if reflected_decision != draft_decision:
                         emit(
                             "=== Reflection outcome ===\n"
@@ -417,9 +417,40 @@ async def run_agent(
                         )
                     decision = reflected_decision
                     reason = reflected.get("reason") or reason
+
+                # Decision lock: evaluate_request wins over LLM draft/reflection.
+                if policy_decision and decision != policy_decision:
+                    emit(
+                        "=== Decision lock ===\n"
+                        f"Snapping {decision!r} → {policy_decision!r} "
+                        f"(evaluate_request rule={policy_rule}).\n"
+                    )
+                    decision = policy_decision
+                    if policy_rule and policy_rule not in reason:
+                        reason = (
+                            f"{reason} [locked to evaluate_request rule={policy_rule}]"
+                        ).strip()
+
+                if (
+                    decision == "escalate"
+                    and "flag_for_human_review" not in tools_called
+                ):
+                    emit(
+                        "=== Decision lock ===\n"
+                        "escalate requires flag_for_human_review; "
+                        "keeping escalate but note missing flag in this run.\n"
+                    )
+
                 emit(f"Final Decision: {decision}")
                 emit(f"Reason: {reason}\n")
             else:
+                if policy_decision and decision != policy_decision:
+                    emit(
+                        "=== Decision lock ===\n"
+                        f"Snapping {decision!r} → {policy_decision!r} "
+                        f"(evaluate_request rule={policy_rule}).\n"
+                    )
+                    decision = policy_decision
                 emit(f"Final Decision: {decision}")
                 emit(f"Reason: {reason}\n")
 
@@ -431,6 +462,8 @@ async def run_agent(
                 extra_header={
                     **({"scenario": scenario_id} if scenario_id else {}),
                     "draft_decision": str(draft_decision),
+                    "policy_decision": str(policy_decision or ""),
+                    "policy_rule": str(policy_rule or ""),
                     "reflection": "on" if enable_reflection else "off",
                 },
             )
@@ -441,6 +474,8 @@ async def run_agent(
                 "reason": reason,
                 "draft_decision": draft_decision,
                 "draft_reason": draft_reason,
+                "policy_decision": policy_decision,
+                "policy_rule": policy_rule,
                 "reflection": reflection_note,
                 "tools_called": tools_called,
                 "trace_path": str(saved),
