@@ -92,7 +92,7 @@ Supporting structured results (not final outcomes) include:
 - Employee not found / invalid id → structured error (tests & tools); agent must not invent an approve.
 - Unknown role on record → structured error from `get_policy_limits`.
 
-Eligibility helpers may expose flags such as `eligible`, `decision_hint` (`approve` / `deny` / `escalate`), `exceeds_frequency`, `last_issued`, `next_eligible_date`, and human-readable `reasons` so the agent layer can apply exceptional-justification checks without duplicating policy math.
+Eligibility helpers may expose flags such as `eligible`, `decision_hint` (`approve` / `deny` / `escalate`), `exceeds_frequency`, `last_issued`, `next_eligible_date`, and human-readable `reasons`. They do **not** inspect free-text justification. The authoritative final outcome comes from `evaluate_request(employee_id, item, reason)`, which applies exceptional-justification phrases on top of eligibility and returns `{decision, rule}`.
 
 ---
 
@@ -111,10 +111,10 @@ Reference “today” for age calculations in design and tests: **2026-10-02**.
 
 ### Target graded scenarios (Phase 6 evidence)
 
-1. **Clear approval** — EMP-101 requests `laptop` with a normal wear/performance reason → **approve**. Trace uses employee + policy/eligibility tools.
-2. **Clear denial** — EMP-102 requests `laptop` replacement after ~6 months with no exceptional justification → **deny**. Must not escalate.
-3. **Escalation A** — EMP-103 early laptop + exceptional reason → call **`flag_for_human_review`** → **escalate**.
-4. **Escalation B** — Any seeded employee (e.g. EMP-101 or EMP-104) requests non-standard gear (e.g. ergonomic split keyboard or standing desk) → call **`flag_for_human_review`** → **escalate**.
+1. **Clear approval** — EMP-101 requests `laptop` with a normal wear/performance reason → `evaluate_request` → **approve** (`within_policy`). Must not escalate.
+2. **Clear denial** — EMP-102 requests `laptop` replacement after ~6 months with no exceptional justification → `evaluate_request` → **deny** (`exceeds_frequency`). Must not escalate.
+3. **Escalation A** — EMP-103 early laptop + exceptional reason → `evaluate_request` → **escalate** (`early_refresh_exceptional`) → call **`flag_for_human_review`** → **escalate**.
+4. **Escalation B** — Any seeded employee (e.g. EMP-101 or EMP-104) requests non-standard gear (e.g. ergonomic split keyboard or standing desk) → `evaluate_request` → **escalate** (`non_standard_item`) → call **`flag_for_human_review`** → **escalate**.
 
 ---
 
@@ -135,19 +135,22 @@ Storage for the lab: in-memory list for the process lifetime, plus optional appe
 
 ---
 
-## 8. Planned plain-function surface (Phase 2 — not implemented yet)
+## 8. Plain-function + MCP surface (implemented)
 
-These four functions will encode this document; no MCP until Phase 3.
+These functions encode this document in `business_logic.py` and are exposed as MCP tools in `server.py`.
 
 | Function | Responsibility |
 |---|---|
 | `get_employee_info(employee_id)` | Role, tenure, hardware inventory; structured error if missing/invalid. |
 | `get_policy_limits(role)` | Per-item max quantity + min years; error if unknown role. |
-| `check_request_eligibility(employee_id, item)` | Compose employee + policy; eligibility, hints, frequency flags, dates. Non-standard → escalate hint. |
-| `flag_for_human_review(employee_id, request, reason)` | Queue append + confirmation. |
+| `check_request_eligibility(employee_id, item)` | Compose employee + policy; eligibility hints only (no free-text reason). |
+| `evaluate_request(employee_id, item, reason)` | Authoritative `{decision, rule}` including exceptional-justification matching. |
+| `flag_for_human_review(employee_id, request, reason)` | Queue append + confirmation (required whenever decision is escalate). |
+
+Stable `evaluate_request.rule` ids include: `within_policy`, `exceeds_frequency`, `early_refresh_exceptional`, `non_standard_item`, `missing_tenure`.
 
 ---
 
-## Done criteria (Phase 1)
+## Done criteria
 
-A grader can reconstruct approve / deny / escalate outcomes for the four scenarios from this document alone, without reading implementation code.
+A grader can reconstruct approve / deny / escalate outcomes for the four scenarios from this document alone, and the agent must copy `evaluate_request.decision` rather than inventing policy.

@@ -5,39 +5,37 @@ from __future__ import annotations
 from typing import Any
 
 
-SYSTEM_PREAMBLE = """You are an IT equipment request agent. You decide approve, deny, or escalate
-using ONLY facts from MCP tool observations — never invent employee data, issue dates, or policy numbers.
+SYSTEM_PREAMBLE = """You are an IT equipment request agent. You investigate requests with MCP tools
+and draft responses. You do NOT invent policy outcomes — evaluate_request is authoritative.
 
 Decision rules (follow strictly):
-- approve: standard item (laptop, monitor, ergonomic_chair) AND check_request_eligibility says
-  eligible/decision_hint=approve (within role frequency/quantity). Normal wear, slowness, or age
-  complaints are NOT reasons to escalate when eligible.
-- deny: standard item AND exceeds_frequency/decision_hint=deny AND the user reason has NO
-  exceptional justification. Exceptional phrases only: damaged, crushed, stolen, broken screen,
-  client site. "Slow", "old", "freezing", or performance complaints alone → deny when over frequency.
-- escalate ONLY when: (1) non-standard item, OR (2) exceeds_frequency WITH exceptional justification,
-  OR (3) missing/conflicting tenure/issue-date (decision_hint=escalate from tools).
+- Preferred tool path: (find_employee if no EMP-###) → get_employee_info → evaluate_request
+  → if decision=escalate call flag_for_human_review → Final Decision.
+- Copy evaluate_request.decision exactly for Final Decision (approve | deny | escalate).
+- Cite evaluate_request.rule in the Reason (e.g. within_policy, exceeds_frequency,
+  early_refresh_exceptional, non_standard_item, missing_tenure).
 - For EVERY escalate you MUST call flag_for_human_review before Final Decision.
 - NEVER call flag_for_human_review for clear approve or clear deny.
-- Authoritative role comes from get_employee_info / find_employee record, not from the user's text.
+- check_request_eligibility / get_policy_limits are optional diagnostics only.
+- Authoritative role comes from get_employee_info / find_employee, not user text.
 - If the user gives a name/department but NO EMP-###, call find_employee first.
-  NEVER pass a person's name as employee_id to get_employee_info.
-- Preferred tools: (find_employee if needed) → get_employee_info → check_request_eligibility
-  → then Final Decision. Stop as soon as you can decide.
+  NEVER pass a person's name as employee_id.
+- Stop as soon as evaluate_request (and flag when needed) lets you decide.
 
 Output format — each turn, reply with EXACTLY one of these two shapes (no markdown fences).
 Final Decision is NOT a tool. Never put Final Decision inside Action JSON.
+Never use Action with a fake tool name like "deny", "approve", or "escalate".
 
 When you need a tool:
 Thought: <what you still need>
-Action: {"tool": "<one of: find_employee|get_employee_info|get_policy_limits|check_request_eligibility|flag_for_human_review>", "arguments": {<json args>}}
+Action: {"tool": "<one of: find_employee|get_employee_info|get_policy_limits|check_request_eligibility|evaluate_request|flag_for_human_review>", "arguments": {<json args>}}
 
 When you can finish (no Action line):
-Thought: <brief justification grounded in observations>
+Thought: <brief justification grounded in evaluate_request>
 Final Decision: approve
-Reason: <cite eligibility/policy facts>
+Reason: <cite rule + eligibility facts>
 
-(Use deny or escalate instead of approve when those rules apply.)
+(Use deny or escalate instead of approve when evaluate_request says so.)
 """
 
 
@@ -48,7 +46,7 @@ def format_tools_for_prompt(tools: list[Any]) -> str:
         name = getattr(tool, "name", None) or tool.get("name")
         desc = getattr(tool, "description", None) or tool.get("description") or ""
         schema = getattr(tool, "inputSchema", None) or tool.get("inputSchema") or {}
-        first = desc.strip().splitlines()[0] if desc else ""
+        first = str(desc).strip().splitlines()[0] if desc else ""
         lines.append(f"- {name}: {first}")
         if schema:
             props = schema.get("properties") or {}
@@ -75,22 +73,15 @@ PARSE_RETRY_HINT = (
 )
 
 REFLECTION_PROMPT = """Review your drafted decision against the retrieved tool outputs.
-Did you verify all policy parameters? Did you avoid committing to unverified timelines?
-If there are ambiguities, did you call flag_for_human_review instead of guessing?
+Did the draft match evaluate_request? Did you avoid inventing a different policy outcome?
 
 Rules while reflecting:
-- Prefer tool observations over the draft. If the draft conflicts with eligibility/
-  policy tool output, CORRECT the Final Decision.
-- Read JSON fields literally. If exceeds_frequency is false and eligible/decision_hint
-  is approve, you MUST keep or correct to approve — never invent an exceeds_frequency denial.
-- approve when tools show eligible=true or decision_hint=approve for a standard item.
-- decision_hint=deny / exceeds_frequency=true means deny UNLESS the User request has
-  exceptional justification (damaged, crushed, stolen, broken screen, client site).
-  Exceptional justification is in the USER REQUEST text, not inside eligibility JSON.
-- If exceeds_frequency is true AND the user request has exceptional justification AND
-  observations include flag_for_human_review, Final Decision MUST be escalate (never deny).
-- escalate also for non-standard items or missing tenure data after flag_for_human_review.
-- Do not invent dates or policy numbers missing from observations.
+- evaluate_request.decision is authoritative. Final Decision MUST equal that decision.
+- If the draft conflicts with evaluate_request, CORRECT to match evaluate_request.decision
+  and cite evaluate_request.rule.
+- If decision=escalate, observations must include flag_for_human_review; if missing, note that.
+- Prefer tool observations over the draft. Do not invent dates or policy numbers.
+- Improve Reason prose if needed, but do not change the decision away from evaluate_request.
 
 User request:
 {user_request}
@@ -104,5 +95,5 @@ Tool observations:
 Reply with EXACTLY:
 Reflection: <validation or what you corrected and why>
 Final Decision: <approve|deny|escalate>
-Reason: <updated or confirmed reason citing tools>
+Reason: <updated or confirmed reason citing evaluate_request.rule>
 """

@@ -19,8 +19,7 @@ SCENARIOS: list[dict[str, Any]] = [
         "title": "Clear Approval",
         "expected": "approve",
         "required_tools_any": [
-            ["check_request_eligibility"],
-            ["get_employee_info", "get_policy_limits"],
+            ["evaluate_request"],
         ],
         "forbid_tools": ["flag_for_human_review"],
         "prompt": (
@@ -28,9 +27,8 @@ SCENARIOS: list[dict[str, Any]] = [
             "can I get a replacement laptop?"
         ),
         "retry_hint": (
-            "Reminder: EMP-101 Engineering laptop issued ~4 years ago is within the "
-            "3-year policy when check_request_eligibility says approve. Do NOT escalate "
-            "or call flag_for_human_review for normal wear. Final Decision must be approve."
+            "Reminder: call evaluate_request for EMP-101 laptop. Expect decision=approve "
+            "rule=within_policy. Copy that decision. Do NOT call flag_for_human_review."
         ),
     },
     {
@@ -38,8 +36,7 @@ SCENARIOS: list[dict[str, Any]] = [
         "title": "Clear Denial",
         "expected": "deny",
         "required_tools_any": [
-            ["check_request_eligibility"],
-            ["get_employee_info", "get_policy_limits"],
+            ["evaluate_request"],
         ],
         "forbid_tools": ["flag_for_human_review"],
         "prompt": (
@@ -47,9 +44,8 @@ SCENARIOS: list[dict[str, Any]] = [
             "second/replacement laptop because mine feels slow in meetings. No damage."
         ),
         "retry_hint": (
-            "Reminder: Sales laptop interval is 4 years. EMP-102 exceeds frequency with "
-            "NO exceptional justification (no crushed/stolen/broken screen). "
-            "Final Decision must be deny. Do not escalate."
+            "Reminder: call evaluate_request for EMP-102 laptop with the slow/no-damage "
+            "reason. Expect decision=deny rule=exceeds_frequency. Do not escalate."
         ),
     },
     {
@@ -57,8 +53,7 @@ SCENARIOS: list[dict[str, Any]] = [
         "title": "Escalation A — early + damage",
         "expected": "escalate",
         "required_tools_any": [
-            ["check_request_eligibility", "flag_for_human_review"],
-            ["get_employee_info", "flag_for_human_review"],
+            ["evaluate_request", "flag_for_human_review"],
         ],
         "forbid_tools": [],
         "prompt": (
@@ -67,8 +62,9 @@ SCENARIOS: list[dict[str, Any]] = [
             "I need an early replacement."
         ),
         "retry_hint": (
-            "Reminder: early refresh WITH exceptional justification (crushed/stolen/"
-            "broken screen) must call flag_for_human_review then Final Decision: escalate."
+            "Reminder: call evaluate_request with the crushed/stolen/broken screen reason. "
+            "Expect decision=escalate rule=early_refresh_exceptional, then "
+            "flag_for_human_review, then Final Decision: escalate."
         ),
     },
     {
@@ -76,7 +72,7 @@ SCENARIOS: list[dict[str, Any]] = [
         "title": "Escalation B — non-standard item",
         "expected": "escalate",
         "required_tools_any": [
-            ["flag_for_human_review"],
+            ["evaluate_request", "flag_for_human_review"],
         ],
         "forbid_tools": [],
         "prompt": (
@@ -84,8 +80,9 @@ SCENARIOS: list[dict[str, Any]] = [
             "(or standing desk) — not a standard catalog laptop/monitor/chair."
         ),
         "retry_hint": (
-            "Reminder: non-standard gear is always escalate. You MUST call "
-            "flag_for_human_review before Final Decision: escalate."
+            "Reminder: call evaluate_request for ergonomic_split_keyboard. Expect "
+            "decision=escalate rule=non_standard_item, then flag_for_human_review, "
+            "then Final Decision: escalate."
         ),
     },
 ]

@@ -1,10 +1,10 @@
 # Submission assets
 
-Drop grading screenshots here before running `python assemble_submission.py --pdf`:
+Files consumed by `assemble_submission.py` / `--pdf`:
 
-| File | What to capture |
+| File | Source |
 |---|---|
-| `phase3_handshake.png` | Terminal showing `python test_client.py` — tools list + EMP-101 payload |
+| `minimal_handshake.txt` / `.png` | `python examples/minimal_client.py` |
+| `phase3_handshake.txt` / `.png` | `python test_client.py` |
 | `ci_green.png` | Green GitHub Actions run for `.github/workflows/ci.yml` |
-
-`pytest_log.txt` is regenerated automatically by `assemble_submission.py`.
+| `pytest_log.txt` | Regenerated automatically by `assemble_submission.py` |

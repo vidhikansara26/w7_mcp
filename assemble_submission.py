@@ -61,10 +61,25 @@ def build_markdown(pytest_log: Path) -> str:
     parts.append(_read(ROOT / "docs" / "requirements.md"))
 
     # 2
-    parts.append("\n## 2. Phase 3 minimal client–server handshake (screenshot)\n")
+    parts.append("\n## 2. Minimal one-tool + full-server MCP handshake\n")
+    parts.append(
+        "Suggested Approach step 3 — trivial `ping` server/client before business logic:\n"
+    )
+    minimal_png = ASSETS / "minimal_handshake.png"
+    minimal_txt = ASSETS / "minimal_handshake.txt"
+    if minimal_png.exists():
+        parts.append(f"![Minimal one-tool MCP handshake]({minimal_png.as_posix()})\n")
+    if minimal_txt.exists():
+        parts.append(_fence("text", _read(minimal_txt)))
+    parts.append(
+        "Full equipment server handshake (`python test_client.py`):\n"
+    )
     handshake = ASSETS / "phase3_handshake.png"
+    handshake_txt = ASSETS / "phase3_handshake.txt"
     if handshake.exists():
         parts.append(f"![Phase 3 MCP handshake]({handshake.as_posix()})\n")
+    elif handshake_txt.exists():
+        parts.append(_fence("text", _read(handshake_txt)))
     else:
         parts.append(
             f"**TODO:** Save a terminal screenshot of `python test_client.py` "
@@ -72,7 +87,12 @@ def build_markdown(pytest_log: Path) -> str:
         )
         parts.append(
             "Until then, recreate the handshake with:\n\n"
-            + _fence("bash", "source .venv/bin/activate\npython test_client.py")
+            + _fence(
+                "bash",
+                "source .venv/bin/activate\n"
+                "python examples/minimal_client.py\n"
+                "python test_client.py",
+            )
         )
 
     # 3
