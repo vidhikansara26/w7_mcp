@@ -17,8 +17,25 @@ REFERENCE_TODAY = date(2026, 10, 2)
 
 STANDARD_ITEMS = frozenset({"laptop", "monitor", "ergonomic_chair"})
 
+# Recognized exceptional justification phrases (docs/requirements.md escalate rule 2).
+EXCEPTIONAL_PHRASES = (
+    "damaged",
+    "crushed",
+    "stolen",
+    "broken screen",
+    "client site",
+)
+
 # In-memory escalation queue (process lifetime).
 ESCALATION_QUEUE: list[dict[str, Any]] = []
+
+
+def has_exceptional_justification(text: str | None) -> bool:
+    """True when free-text contains a recognized exceptional-justification phrase."""
+    if not text or not isinstance(text, str):
+        return False
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in EXCEPTIONAL_PHRASES)
 
 
 def _load_json(path: Path) -> Any:
@@ -230,7 +247,7 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
     """Compose employee + policy into an eligibility assessment.
 
     Does not inspect free-text justification. When frequency is exceeded, sets
-    ``exceeds_frequency`` so the agent layer can escalate on exceptional reasons.
+    ``exceeds_frequency`` so ``evaluate_request`` can escalate on exceptional reasons.
     """
     if not item or not isinstance(item, str):
         return _error("invalid_item", "item must be a non-empty string")
@@ -401,8 +418,87 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
         "reasons": [
             f"Request exceeds frequency: last {item_key} issued {last_issued_str}; "
             f"only {elapsed:.2f} years elapsed, policy requires {min_years} for {employee['role']}. "
-            "Agent may escalate if reason contains exceptional justification."
+            "Call evaluate_request with the free-text reason to apply exceptional-justification rules."
         ],
+    }
+
+
+def evaluate_request(employee_id: str, item: str, reason: str) -> dict[str, Any]:
+    """Authoritative approve/deny/escalate decision for one request.
+
+    Combines ``check_request_eligibility`` with free-text exceptional-justification
+    matching. The LLM must copy ``decision`` / ``rule`` rather than re-judge policy.
+    """
+    if reason is None or not isinstance(reason, str) or not reason.strip():
+        return _error("invalid_reason", "reason must be a non-empty string")
+
+    eligibility = check_request_eligibility(employee_id, item)
+    if not eligibility.get("ok"):
+        return {
+            "ok": False,
+            "decision": "escalate",
+            "rule": str(eligibility.get("error") or "lookup_failed"),
+            "eligibility": eligibility,
+            "reasons": [eligibility.get("message") or "Employee/policy lookup failed."],
+            "has_exceptional_justification": has_exceptional_justification(reason),
+        }
+
+    hint = eligibility.get("decision_hint")
+    exceptional = has_exceptional_justification(reason)
+    base_reasons = list(eligibility.get("reasons") or [])
+
+    if hint == "approve":
+        return {
+            "ok": True,
+            "decision": "approve",
+            "rule": "within_policy",
+            "eligibility": eligibility,
+            "reasons": base_reasons,
+            "has_exceptional_justification": exceptional,
+        }
+
+    if hint == "escalate":
+        reasons_text = " ".join(base_reasons).lower()
+        if "not on the standard" in reasons_text or "standard catalog" in reasons_text:
+            rule = "non_standard_item"
+        elif "issued_date" in reasons_text or "missing" in reasons_text or "conflict" in reasons_text:
+            rule = "missing_tenure"
+        else:
+            rule = "ambiguous_eligibility"
+        return {
+            "ok": True,
+            "decision": "escalate",
+            "rule": rule,
+            "eligibility": eligibility,
+            "reasons": base_reasons,
+            "has_exceptional_justification": exceptional,
+            "next_action": "flag_for_human_review",
+        }
+
+    # hint == deny (exceeds frequency / quantity)
+    if eligibility.get("exceeds_frequency") and exceptional:
+        return {
+            "ok": True,
+            "decision": "escalate",
+            "rule": "early_refresh_exceptional",
+            "eligibility": eligibility,
+            "reasons": base_reasons
+            + [
+                "Free-text reason contains exceptional justification; "
+                "escalate via flag_for_human_review rather than auto-deny."
+            ],
+            "has_exceptional_justification": True,
+            "next_action": "flag_for_human_review",
+        }
+
+    return {
+        "ok": True,
+        "decision": "deny",
+        "rule": "exceeds_frequency",
+        "eligibility": eligibility,
+        "reasons": base_reasons
+        + ["No exceptional justification in reason; clear deny under frequency policy."],
+        "has_exceptional_justification": False,
     }
 
 

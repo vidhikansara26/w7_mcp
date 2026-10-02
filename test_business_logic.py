@@ -3,7 +3,8 @@ This script contains the unit tests for the business logic.
 1. get_employee_info()
 2. get_policy_limits()
 3. check_request_eligibility()
-4. flag_for_human_review().
+4. evaluate_request()
+5. flag_for_human_review().
 '''
 
 from __future__ import annotations
@@ -169,6 +170,108 @@ def test_management_second_monitor_under_max_qty():
     assert result["eligible"] is True
     assert result["decision_hint"] == "approve"
     assert result["owned_count"] == 1
+
+
+# --- evaluate_request: authoritative approve / deny / escalate ---
+
+
+def test_evaluate_approve_engineering_laptop():
+    """Graded approve: EMP-101 laptop within 3-year Engineering rule."""
+    result = bl.evaluate_request(
+        "EMP-101",
+        "laptop",
+        "My laptop is 4 years old and slow; need a replacement.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "approve"
+    assert result["rule"] == "within_policy"
+    assert result["eligibility"]["eligible"] is True
+
+
+def test_evaluate_deny_sales_laptop_no_exception():
+    """Graded deny: EMP-102 early laptop with only performance complaints."""
+    result = bl.evaluate_request(
+        "EMP-102",
+        "laptop",
+        "Laptop is freezing and old; please replace it.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "deny"
+    assert result["rule"] == "exceeds_frequency"
+    assert result["has_exceptional_justification"] is False
+
+
+def test_evaluate_escalate_early_refresh_exceptional():
+    """Graded escalate A: EMP-103 early laptop + crushed/stolen justification."""
+    result = bl.evaluate_request(
+        "EMP-103",
+        "laptop",
+        "Screen was crushed on a client site / stolen bag — broken screen.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "escalate"
+    assert result["rule"] == "early_refresh_exceptional"
+    assert result["has_exceptional_justification"] is True
+    assert result["next_action"] == "flag_for_human_review"
+    # Eligibility alone still says deny; evaluate_request upgrades on phrases.
+    assert result["eligibility"]["decision_hint"] == "deny"
+    assert result["eligibility"]["exceeds_frequency"] is True
+
+
+def test_evaluate_escalate_non_standard_item():
+    """Graded escalate B: non-standard catalog item."""
+    result = bl.evaluate_request(
+        "EMP-101",
+        "ergonomic_split_keyboard",
+        "Need a split keyboard for RSI.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "escalate"
+    assert result["rule"] == "non_standard_item"
+    assert result["next_action"] == "flag_for_human_review"
+
+
+def test_evaluate_escalate_missing_tenure():
+    """EMP-105 missing issued_date → escalate / missing_tenure."""
+    result = bl.evaluate_request(
+        "EMP-105",
+        "laptop",
+        "Need a laptop refresh; unsure when mine was issued.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "escalate"
+    assert result["rule"] == "missing_tenure"
+
+
+def test_evaluate_early_without_exception_stays_deny():
+    """EMP-103 early laptop without exceptional phrases stays deny."""
+    result = bl.evaluate_request(
+        "EMP-103",
+        "laptop",
+        "It feels slow and I want a newer model.",
+    )
+    assert result["ok"] is True
+    assert result["decision"] == "deny"
+    assert result["rule"] == "exceeds_frequency"
+
+
+def test_evaluate_unknown_employee():
+    result = bl.evaluate_request("EMP-999", "laptop", "Need a laptop.")
+    assert result["ok"] is False
+    assert result["decision"] == "escalate"
+    assert result["rule"] == "employee_not_found"
+
+
+def test_evaluate_requires_nonempty_reason():
+    result = bl.evaluate_request("EMP-101", "laptop", "")
+    assert result["ok"] is False
+    assert result["error"] == "invalid_reason"
+
+
+def test_has_exceptional_justification_phrases():
+    assert bl.has_exceptional_justification("crushed on client site") is True
+    assert bl.has_exceptional_justification("just slow") is False
+    assert bl.has_exceptional_justification(None) is False
 
 
 # --- flag_for_human_review side effects ---
