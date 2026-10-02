@@ -89,13 +89,11 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
 
     Problem this solves: composes employee inventory with role policy into a
     deterministic eligibility result (approve / deny / escalate hints) without
-    duplicating policy math in the agent.
+    duplicating policy math in the agent. Does NOT inspect free-text reason.
 
-    When to call: after resolving employee_id and the requested item. Use
-    decision_hint and exceeds_frequency together with the requester's free-text
-    reason: if exceeds_frequency and the reason claims damage/theft/broken screen,
-    call flag_for_human_review instead of denying. Non-standard items and missing
-    issued_date data return decision_hint=escalate.
+    When to call: optional diagnostic after resolving employee_id and item.
+    Prefer evaluate_request for the authoritative approve/deny/escalate decision
+    (it applies exceptional-justification phrases on top of this eligibility).
 
     Args:
         employee_id: Employee identifier such as "EMP-101".
@@ -111,6 +109,32 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def evaluate_request(employee_id: str, item: str, reason: str) -> dict[str, Any]:
+    """Apply the full policy procedure and return {decision, rule}.
+
+    Problem this solves: eligibility math alone cannot decide early-refresh cases;
+    free-text exceptional justification must be applied deterministically. This
+    tool is the authoritative decision — do not invent approve/deny/escalate.
+
+    When to call: after you know employee_id and the requested item, with the
+    requester's free-text reason. Then:
+      - decision=approve or deny → draft Final Decision with that decision
+      - decision=escalate → call flag_for_human_review, then Final Decision escalate
+
+    Args:
+        employee_id: Employee identifier such as "EMP-101".
+        item: Requested item key (e.g. "laptop", "standing_desk").
+        reason: Free-text justification from the requester.
+
+    Returns:
+        Success: {ok, decision, rule, eligibility, reasons,
+        has_exceptional_justification, next_action?}.
+        Failure: ok=false with rule/error when lookup fails or reason is empty.
+    """
+    return bl.evaluate_request(employee_id, item, reason)
+
+
+@mcp.tool()
 def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[str, Any]:
     """Queue an equipment request for human review (required for all escalations).
 
@@ -118,9 +142,9 @@ def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[s
     non-standard gear, early refresh with exceptional justification, or missing /
     conflicting tenure data need a human. This tool records the escalation.
 
-    When to call: whenever the final decision will be escalate. Call this before
-    (or as part of) returning an escalate outcome. Do not call it for clear
-    approve or clear deny paths.
+    When to call: when evaluate_request returns decision=escalate (or next_action
+    is flag_for_human_review). Call before Final Decision: escalate. Do not call
+    for clear approve or clear deny paths.
 
     Args:
         employee_id: Employee identifier such as "EMP-103".

@@ -1,4 +1,4 @@
-"""Stdio MCP client smoke test — handshake and all four tools."""
+"""Stdio MCP client smoke test — handshake and equipment policy tools."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "find_employee",
     "get_policy_limits",
     "check_request_eligibility",
+    "evaluate_request",
     "flag_for_human_review",
 }
 
@@ -95,6 +96,20 @@ async def run(all_tools: bool) -> None:
                     r3,
                 )
 
+                r_eval = await session.call_tool(
+                    "evaluate_request",
+                    {
+                        "employee_id": "EMP-101",
+                        "item": "laptop",
+                        "reason": "Laptop is 4 years old and slow.",
+                    },
+                )
+                _print_tool_result(
+                    'call_tool("evaluate_request", '
+                    '{"employee_id": "EMP-101", "item": "laptop", ...})',
+                    r_eval,
+                )
+
                 r4 = await session.call_tool(
                     "flag_for_human_review",
                     {
@@ -116,7 +131,7 @@ def main() -> None:
     parser.add_argument(
         "--all-tools",
         action="store_true",
-        help="Smoke-call all four tools (default: handshake + get_employee_info)",
+        help="Smoke-call all policy tools (default: handshake + get_employee_info)",
     )
     args = parser.parse_args()
     asyncio.run(run(all_tools=args.all_tools))
