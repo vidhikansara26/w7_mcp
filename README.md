@@ -1,122 +1,97 @@
 # IT Equipment Request Lab using MCP
 
-MCP week 7 assignment: policy design → plain Python → MCP server → ReAct agent.
+Week 7 lab: an internal IT equipment request handler exposed as an MCP server, plus a
+ReAct agent that investigates requests with those tools and escalates ambiguous cases
+instead of guessing.
+
+Pipeline: **Planner → TAO → Reflector**
+
+- **Planner**: system prompt; the model states its plan before acting.
+- **TAO**: Thought / Action / Observation over MCP tools, with an explicit `[ROUTE]`
+  step after `evaluate_request` returns.
+- **Reflector**: second LLM pass that confirms the draft; a decision lock snaps any
+  drift back to `evaluate_request.decision`.
+
+Policy decisions are **deterministic** in `evaluate_request`. The LLM extracts fields,
+calls tools, routes, and drafts — it does not invent approve/deny/escalate.
 
 ## Layout
 
 ```
 w7_mcp/
-  docs/requirements.md       # Phase 1 — policy design
-  data/
-    employees.json           # mock employee DB
-    policies.json            # role × item limits
-  business_logic.py          # Phase 2 — plain functions
-  test_business_logic.py     # Phase 2 — pytest
-  server.py                  # Phase 3–4 — FastMCP (stdio)
-  test_client.py             # stdio MCP client (handshake + optional --all-tools)
+  docs/requirements.md       # policy design (testable rules)
+  data/                      # employees.json, policies.json
+  business_logic.py          # plain functions (tested directly)
+  test_business_logic.py
+  server.py                  # FastMCP stdio server
+  test_client.py             # full-server handshake / smoke client
+  examples/                  # minimal one-tool ping server + client
   agent.py                   # ReAct agent (Ollama + MCP)
-  llm.py                     # Ollama /api/chat wrapper
-  prompts.py                 # system + parse-retry prompts
-  run_scenarios.py           # Phase 6 graded scenarios + reflection demo
-  assemble_submission.py     # Phase 7 submission packet assembler
-  traces/                    # ad-hoc Thought/Action/Observation logs
-  traces/scenarios/          # curated Phase 6 evidence traces
-  docs/submission_assets/    # handshake + CI screenshots for the PDF
-  .github/workflows/ci.yml   # Phase 7 CI (pytest only; no Ollama)
-  requirements.txt
-  .env.example               # OLLAMA_HOST, OLLAMA_MODEL
+  llm.py / prompts.py
+  run_scenarios.py           # graded approve/deny/escalate traces
+  assemble_submission.py     # Markdown + PDF packet
+  traces/scenarios/          # curated evidence
+  docs/submission_assets/    # handshake + CI screenshots
+  .github/workflows/ci.yml
 ```
 
-## Setup (required)
+## Tools
 
-Use a project virtualenv — do not install deps into system Python.
+| Tool | What it does |
+|---|---|
+| `get_employee_info(employee_id)` | role, tenure, equipment on file |
+| `find_employee(name, role?)` | resolve EMP-### from name/department |
+| `get_policy_limits(role)` | role eligibility intervals / quantities |
+| `check_request_eligibility(employee_id, item)` | eligibility math (no free-text reason) |
+| `evaluate_request(employee_id, item, reason)` | authoritative `{decision, rule}` |
+| `flag_for_human_review(employee_id, request, reason)` | side-effecting escalation queue |
+
+## Setup
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env               # edit OLLAMA_HOST if needed
 ```
 
-Confirm the venv is active (`which python` should point at `.venv/bin/python`) before
-running tests, the MCP client, or the agent. `.venv/` is gitignored.
+Default model: `llama3.1:8b` via `OLLAMA_HOST` (often `http://host.docker.internal:11434`
+from Docker Desktop).
 
-## Unit tests
+## Run
 
 ```bash
+# unit tests (no LLM)
 pytest test_business_logic.py -v
-```
 
-## MCP server (stdio)
+# Suggested Approach step 3 — minimal one-tool proof
+python examples/minimal_client.py
 
-MCP tools (thin wrappers over `business_logic.py`):
-
-- `get_employee_info` — lookup by `EMP-###`
-- `find_employee` — resolve `EMP-###` from name (+ optional department)
-- `get_policy_limits`
-- `check_request_eligibility`
-- `flag_for_human_review`
-
-```bash
-# Handshake + EMP-101
+# full-server handshake + EMP-101
 python test_client.py
-
-# Smoke-call all four tools
 python test_client.py --all-tools
-```
 
-## ReAct agent (Ollama)
-
-Requires a running Ollama with `OLLAMA_MODEL` pulled (default `llama3.1:8b`).
-Inside Docker Desktop, you may need `OLLAMA_HOST=http://host.docker.internal:11434`.
-
-```bash
+# one natural-language request
 python agent.py "EMP-101: My laptop is about 4 years old and slowing down; can I get a replacement?"
 
-# Or name + department (uses find_employee → EMP-###):
-python agent.py "I'm Alex Rivera in Engineering. My laptop is 4 years old — can I get a replacement?"
-```
-
-Logs Thought → Action → Observation to stdout and `traces/`. Reflection runs by default
-(`--no-reflect` to skip).
-
-## Phase 6 scenarios + reflection
-
-```bash
+# graded scenarios → traces/scenarios/
 python run_scenarios.py
+
+# submission packet
+python assemble_submission.py --pdf
 ```
 
-Writes curated traces under `traces/scenarios/`:
+## Scenarios
 
-- `00_reflection_correction.txt` — injected bad deny draft corrected to approve
-- `01_approve.txt` — EMP-101 clear approve
-- `02_deny.txt` — EMP-102 clear deny
-- `03_escalate_damage.txt` — EMP-103 early + damage → flag + escalate
-- `04_escalate_nonstandard.txt` — non-catalog item → flag + escalate
+| Trace | Outcome |
+|---|---|
+| `00_reflection_correction.txt` | injected deny draft → corrected to approve |
+| `01_approve.txt` | EMP-101 → `within_policy` approve |
+| `02_deny.txt` | EMP-102 → `exceeds_frequency` deny |
+| `03_escalate_damage.txt` | EMP-103 → `early_refresh_exceptional` + flag |
+| `04_escalate_nonstandard.txt` | non-catalog item → `non_standard_item` + flag |
 
-## CI (Phase 7)
+## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) on push/PR:
-
-1. Python 3.11
-2. `pip install -r requirements.txt`
-3. `pytest test_business_logic.py -v`
-
-No Ollama / agent steps in CI.
-
-## Submission packet (Phase 7)
-
-Assembles the graded PDF sections into Markdown (and optional PDF):
-
-```bash
-source .venv/bin/activate
-# optional screenshots:
-#   docs/submission_assets/phase3_handshake.png
-#   docs/submission_assets/ci_green.png
-python assemble_submission.py          # → submission/IT_Equipment_MCP_Submission.md
-pip install fpdf2                      # PDF export (no pandoc required)
-python assemble_submission.py --pdf    # → submission/*.pdf (headings + code formatting)
-```
-
-Open the PDF in Chrome, Preview, or a system viewer — Cursor’s built-in preview is limited.
-The Markdown file is always the reliable readable source.
+`.github/workflows/ci.yml` runs `pytest test_business_logic.py -v` on push/PR.
+No Ollama in CI.
