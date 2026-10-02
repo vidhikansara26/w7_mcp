@@ -1,4 +1,10 @@
-"""Unit tests for Phase 2 plain business logic."""
+'''
+This script contains the unit tests for the business logic.
+1. get_employee_info()
+2. get_policy_limits()
+3. check_request_eligibility()
+4. flag_for_human_review().
+'''
 
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ import business_logic as bl
 
 @pytest.fixture(autouse=True)
 def _clean_escalations():
+    """Clear the escalation queue and truncate the file."""
     bl.clear_escalation_queue(truncate_file=True)
     yield
     bl.clear_escalation_queue(truncate_file=True)
@@ -21,6 +28,7 @@ def _clean_escalations():
 
 
 def test_get_employee_info_valid_engineering():
+    """EMP-101: valid engineering employee."""
     result = bl.get_employee_info("EMP-101")
     assert result["ok"] is True
     assert result["employee_id"] == "EMP-101"
@@ -30,12 +38,14 @@ def test_get_employee_info_valid_engineering():
 
 
 def test_get_employee_info_nonexistent():
+    """EMP-999: nonexistent employee."""
     result = bl.get_employee_info("EMP-999")
     assert result["ok"] is False
     assert result["error"] == "employee_not_found"
 
 
 def test_get_employee_info_invalid_id():
+    """Invalid employee ID: empty string."""
     result = bl.get_employee_info("")
     assert result["ok"] is False
     assert result["error"] == "invalid_employee_id"
@@ -49,6 +59,7 @@ def test_get_employee_info_invalid_id():
 
 
 def test_get_policy_limits_engineering():
+    """Engineering role policy limits."""
     result = bl.get_policy_limits("Engineering")
     assert result["ok"] is True
     assert result["limits"]["laptop"] == {"max_qty": 1, "min_years": 3}
@@ -57,6 +68,7 @@ def test_get_policy_limits_engineering():
 
 
 def test_get_policy_limits_unknown_role():
+    """Unknown role: Intern."""
     result = bl.get_policy_limits("Intern")
     assert result["ok"] is False
     assert result["error"] == "unknown_role"
@@ -98,6 +110,7 @@ def test_exceeds_frequency_early_engineering_for_agent_escalation():
 
 
 def test_non_standard_item_escalate_hint():
+    """EMP-101: standing desk → escalate, do not guess."""
     result = bl.check_request_eligibility("EMP-101", "standing_desk")
     assert result["ok"] is True
     assert result["eligible"] is False
@@ -116,12 +129,14 @@ def test_missing_tenure_data_escalate():
 
 
 def test_eligibility_invalid_employee():
+    """EMP-999: nonexistent employee."""
     result = bl.check_request_eligibility("EMP-999", "laptop")
     assert result["ok"] is False
     assert result["error"] == "employee_not_found"
 
 
 def test_management_chair_never_owned_approve():
+    """EMP-104: ergonomic chair never owned → approve."""
     result = bl.check_request_eligibility("EMP-104", "ergonomic_chair")
     assert result["ok"] is True
     assert result["eligible"] is True
@@ -141,6 +156,7 @@ def test_management_second_monitor_under_max_qty():
 
 
 def test_flag_for_human_review_queue_and_timestamp():
+    """EMP-103: laptop → flag for human review."""
     result = bl.flag_for_human_review(
         "EMP-103",
         "laptop",
@@ -170,6 +186,8 @@ def test_flag_for_human_review_queue_and_timestamp():
 
 
 def test_flag_for_human_review_requires_fields():
+    """Empty fields: employee_id, request, reason."""
     assert bl.flag_for_human_review("", "laptop", "reason")["ok"] is False
     assert bl.flag_for_human_review("EMP-101", "", "reason")["ok"] is False
     assert bl.flag_for_human_review("EMP-101", "laptop", "")["ok"] is False
+    assert bl.flag_for_human_review("EMP-101", "laptop", None)["ok"] is False
