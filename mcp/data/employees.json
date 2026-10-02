@@ -1,0 +1,68 @@
+{
+  "EMP-101": {
+    "employee_id": "EMP-101",
+    "name": "Alex Rivera",
+    "role": "Engineering",
+    "hire_date": "2019-03-15",
+    "inventory": [
+      {
+        "item": "laptop",
+        "issued_date": "2022-09-01",
+        "asset_tag": "LT-101"
+      }
+    ]
+  },
+  "EMP-102": {
+    "employee_id": "EMP-102",
+    "name": "Jordan Lee",
+    "role": "Sales",
+    "hire_date": "2023-01-10",
+    "inventory": [
+      {
+        "item": "laptop",
+        "issued_date": "2026-04-01",
+        "asset_tag": "LT-102"
+      }
+    ]
+  },
+  "EMP-103": {
+    "employee_id": "EMP-103",
+    "name": "Sam Chen",
+    "role": "Engineering",
+    "hire_date": "2021-06-01",
+    "inventory": [
+      {
+        "item": "laptop",
+        "issued_date": "2025-10-01",
+        "asset_tag": "LT-103"
+      }
+    ]
+  },
+  "EMP-104": {
+    "employee_id": "EMP-104",
+    "name": "Taylor Brooks",
+    "role": "Management",
+    "hire_date": "2018-11-20",
+    "inventory": [
+      {
+        "item": "monitor",
+        "issued_date": "2024-10-01",
+        "asset_tag": "MN-104"
+      }
+    ]
+  },
+  "EMP-105": {
+    "employee_id": "EMP-105",
+    "name": "Casey Ng",
+    "role": "Engineering",
+    "hire_date": "2020-05-01",
+    "inventory": [
+      {
+        "item": "laptop",
+        "issued_date": null,
+        "asset_tag": "LT-105",
+        "notes": "issued_date missing; conflicts with tenure for eligibility"
+      }
+    ]
+  }
+}
