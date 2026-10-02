@@ -1,26 +1,42 @@
-'''
-This script connects to the IT-Equipment-Server over stdio and performs the following steps:
-1. Initializes the connection
-2. Lists the tools
-3. Calls the get_employee_info() tool
-4. Prints the result
-'''
+"""Stdio MCP client smoke test — handshake and all four tools."""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parent
 
+EXPECTED_TOOLS = {
+    "get_employee_info",
+    "get_policy_limits",
+    "check_request_eligibility",
+    "flag_for_human_review",
+}
 
-async def main() -> None:
-    """Main function to connect to the IT-Equipment-Server over stdio."""
+
+def _print_tool_result(label: str, result: Any) -> None:
+    print(f"\n=== {label} ===")
+    if getattr(result, "isError", False):
+        print("Tool returned an error:")
+    for block in result.content:
+        text = getattr(block, "text", None)
+        if text is None:
+            continue
+        try:
+            print(json.dumps(json.loads(text), indent=2))
+        except json.JSONDecodeError:
+            print(text)
+
+
+async def run(all_tools: bool) -> None:
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[str(ROOT / "server.py")],
@@ -39,30 +55,71 @@ async def main() -> None:
 
             print("\n=== Tools discovered (list_tools) ===")
             tools = (await session.list_tools()).tools
+            names = {t.name for t in tools}
             for tool in tools:
                 desc = (tool.description or "").splitlines()[0]
                 print(f"- {tool.name}: {desc}")
-                if tool.inputSchema:
-                    print(f"  inputSchema: {json.dumps(tool.inputSchema, indent=2)}")
 
-            print('\n=== call_tool("get_employee_info", {"employee_id": "EMP-101"}) ===')
+            missing = EXPECTED_TOOLS - names
+            if missing:
+                raise SystemExit(f"Missing tools: {sorted(missing)}")
+            print(f"\nRegistered tools OK: {sorted(names)}")
+
             result = await session.call_tool(
                 "get_employee_info",
                 {"employee_id": "EMP-101"},
             )
-            if result.isError:
-                print("Tool returned an error:")
-            for block in result.content:
-                text = getattr(block, "text", None)
-                if text is not None:
-                    try:
-                        parsed = json.loads(text)
-                        print(json.dumps(parsed, indent=2))
-                    except json.JSONDecodeError:
-                        print(text)
+            _print_tool_result(
+                'call_tool("get_employee_info", {"employee_id": "EMP-101"})',
+                result,
+            )
 
-            print("\nPhase 3 handshake complete.")
+            if all_tools:
+                r2 = await session.call_tool(
+                    "get_policy_limits",
+                    {"role": "Engineering"},
+                )
+                _print_tool_result(
+                    'call_tool("get_policy_limits", {"role": "Engineering"})',
+                    r2,
+                )
+
+                r3 = await session.call_tool(
+                    "check_request_eligibility",
+                    {"employee_id": "EMP-101", "item": "laptop"},
+                )
+                _print_tool_result(
+                    'call_tool("check_request_eligibility", '
+                    '{"employee_id": "EMP-101", "item": "laptop"})',
+                    r3,
+                )
+
+                r4 = await session.call_tool(
+                    "flag_for_human_review",
+                    {
+                        "employee_id": "EMP-103",
+                        "request": "laptop",
+                        "reason": "Smoke test escalation entry",
+                    },
+                )
+                _print_tool_result(
+                    'call_tool("flag_for_human_review", ...)',
+                    r4,
+                )
+
+            print("\nMCP client smoke test complete.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="IT Equipment MCP stdio client")
+    parser.add_argument(
+        "--all-tools",
+        action="store_true",
+        help="Smoke-call all four tools (default: handshake + get_employee_info)",
+    )
+    args = parser.parse_args()
+    asyncio.run(run(all_tools=args.all_tools))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -13,7 +13,7 @@ w7_mcp/
   business_logic.py          # Phase 2 — plain functions
   test_business_logic.py     # Phase 2 — pytest
   server.py                  # Phase 3–4 — FastMCP (stdio)
-  test_client.py             # Phase 3 — stdio handshake client
+  test_client.py             # stdio MCP client (handshake + optional --all-tools)
   requirements.txt
   .env.example               # later: OLLAMA_HOST, OLLAMA_MODEL
 ```
@@ -26,16 +26,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Phase 2 — unit tests
+## Unit tests
 
 ```bash
 pytest test_business_logic.py -v
 ```
 
-## Phase 3 — MCP handshake
+## MCP server (stdio)
+
+Four tools (thin wrappers over `business_logic.py`):
+
+- `get_employee_info`
+- `get_policy_limits`
+- `check_request_eligibility`
+- `flag_for_human_review`
 
 ```bash
+# Handshake + EMP-101
 python test_client.py
-```
 
-Expected: `initialize` → `list_tools` shows `get_employee_info` → EMP-101 payload.
+# Smoke-call all four tools
+python test_client.py --all-tools
+```
