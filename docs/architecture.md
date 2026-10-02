@@ -329,14 +329,13 @@ sequenceDiagram
 
 Typical tool path:
 
-1. `find_employee` — only if no `EMP-###`
+1. `find_employee` — only if no `EMP-###` in the prompt
 2. `get_employee_info` — authoritative role + inventory
-3. `get_policy_limits` — optional diagnostic
-4. `check_request_eligibility` — `decision_hint` / `exceeds_frequency`
-5. If escalate case → `flag_for_human_review` **before** Final Decision
-6. Draft Final Decision
+3. `evaluate_request` — authoritative `{decision, rule}` (+ optional eligibility/policy diagnostics)
+4. If escalate → `flag_for_human_review` **before** Final Decision
+5. Draft Final Decision; reflection + decision lock
 
-Exceptional early-refresh (EMP-103): eligibility says **deny**, but the prompt tells the model that damage phrases → call `flag_for_human_review` then escalate. If reflection wrongly flips to deny after a flag, the **reflection guard** in `agent.py` snaps back to escalate.
+If the prompt already contains `EMP-###`, the host locks that id: `find_employee` is blocked and any conflicting `employee_id` args are rewritten to the explicit id (so `"EMP-101: My name is Sam"` stays EMP-101).
 
 ### 6.6 Reflection
 
