@@ -1,0 +1,25 @@
+{
+  "standard_items": ["laptop", "monitor", "ergonomic_chair"],
+  "roles": {
+    "Engineering": {
+      "laptop": {"max_qty": 1, "min_years": 3},
+      "monitor": {"max_qty": 2, "min_years": 2},
+      "ergonomic_chair": {"max_qty": 1, "min_years": 5}
+    },
+    "Sales": {
+      "laptop": {"max_qty": 1, "min_years": 4},
+      "monitor": {"max_qty": 1, "min_years": 3},
+      "ergonomic_chair": {"max_qty": 1, "min_years": 5}
+    },
+    "Operations": {
+      "laptop": {"max_qty": 1, "min_years": 4},
+      "monitor": {"max_qty": 1, "min_years": 3},
+      "ergonomic_chair": {"max_qty": 1, "min_years": 5}
+    },
+    "Management": {
+      "laptop": {"max_qty": 1, "min_years": 2},
+      "monitor": {"max_qty": 2, "min_years": 2},
+      "ergonomic_chair": {"max_qty": 1, "min_years": 5}
+    }
+  }
+}
