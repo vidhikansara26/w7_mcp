@@ -20,6 +20,7 @@ calls tools, routes, and drafts — it does not invent approve/deny/escalate.
 ```
 w7_mcp/
   docs/requirements.md       # policy design (testable rules)
+  docs/architecture.md       # end-to-end system flow (granular)
   data/                      # employees.json, policies.json
   business_logic.py          # plain functions (tested directly)
   test_business_logic.py
