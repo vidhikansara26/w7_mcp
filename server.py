@@ -152,7 +152,8 @@ def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[s
         reason: Why human review is required (policy conflict, damage claim, etc.).
 
     Returns:
-        Success: {ok, flagged, queue_size, entry: {timestamp, employee_id, request, reason}, message}.
+        Success: {ok, flagged, queue_size, entry, message}.
+        entry is {timestamp, employee_id, request, reason}.
         Failure: {ok: false, error, message} if required fields are empty.
     """
     return bl.flag_for_human_review(employee_id, request, reason)

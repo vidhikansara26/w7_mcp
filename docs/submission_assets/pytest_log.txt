@@ -2,6 +2,7 @@
 platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /workspace/mcp/w7_mcp/.venv/bin/python
 cachedir: .pytest_cache
 rootdir: /workspace/mcp/w7_mcp
+configfile: pyproject.toml
 plugins: anyio-4.15.1
 collecting ... collected 27 items
 

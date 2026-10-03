@@ -14,6 +14,7 @@ PDF section order (assignment):
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -171,20 +172,41 @@ def _wrap_line(line: str, max_chars: int) -> list[str]:
 
 def _strip_md_inline(text: str) -> str:
     """Remove light markdown decoration for plain PDF body text."""
-    import re
-
-    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[image: \1]", text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = text.replace("**", "").replace("__", "").replace("`", "")
     return text
 
 
+def _split_row(line: str) -> list[str]:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return [_strip_md_inline(cell) for cell in cells]
+
+
+def _is_table_separator(line: str) -> bool:
+    body = line.replace("|", "").strip()
+    return line.startswith("|") and bool(body) and set(body) <= {"-", ":", " "}
+
+
+def _resolve_image(raw: str) -> Path | None:
+    candidate = Path(raw.strip())
+    options = [candidate]
+    if not candidate.is_absolute():
+        options.append((ROOT / candidate).resolve())
+    options.append(ASSETS / candidate.name)
+    for path in options:
+        if path.is_file():
+            return path
+    return None
+
+
 def write_pdf_from_markdown(md_path: Path, pdf_path: Path) -> bool:
-    """Readable PDF via fpdf2 (no pandoc). Renders headings/body/code with Unicode fonts."""
+    """Readable PDF via fpdf2. Headings, tables, images, and code each keep their shape."""
     try:
         from fpdf import FPDF  # type: ignore
+        from PIL import Image
     except ImportError:
-        print("fpdf2 not installed — skipping PDF. Run: pip install fpdf2")
+        print("fpdf2 and Pillow are required. Run: pip install fpdf2")
         return False
 
     font_dir = Path("/usr/share/fonts/truetype/dejavu")
@@ -215,6 +237,7 @@ def write_pdf_from_markdown(md_path: Path, pdf_path: Path) -> bool:
     usable = pdf.epw
     in_code = False
     code_lang = ""
+    table_rows: list[list[str]] = []
 
     def write_body(line: str, size: int = 10) -> None:
         pdf.set_font("Sans", size=size)
@@ -250,7 +273,6 @@ def write_pdf_from_markdown(md_path: Path, pdf_path: Path) -> bool:
         max_chars = max(48, int(usable / char_w) - 1)
         for chunk in _wrap_line(line, max_chars):
             pdf.set_x(pdf.l_margin)
-            # Light background bar for code readability
             y = pdf.get_y()
             pdf.set_fill_color(245, 245, 245)
             pdf.rect(pdf.l_margin, y, usable, 3.8, style="F")
@@ -262,55 +284,135 @@ def write_pdf_from_markdown(md_path: Path, pdf_path: Path) -> bool:
                 new_y="NEXT",
             )
 
-    def maybe_embed_image(line: str) -> bool:
-        import re
+    def flush_table() -> None:
+        if not table_rows:
+            return
+        cols = max(len(row) for row in table_rows)
+        rows = [row + [""] * (cols - len(row)) for row in table_rows]
+        mins: list[float] = []
+        extras: list[float] = []
+        for col in range(cols):
+            widest_token = 0.0
+            longest = 0
+            for row_index, row in enumerate(rows):
+                pdf.set_font("Sans", "B" if row_index == 0 else "", size=8)
+                for token in (row[col] or " ").replace("/", " / ").split():
+                    widest_token = max(widest_token, pdf.get_string_width(token))
+                longest = max(longest, len(row[col]))
+            mins.append(widest_token + 2 * 1.1 + 0.8)
+            extras.append(float(max(longest, 1)))
+        if sum(mins) > usable:
+            scale = usable / sum(mins)
+            widths = [width * scale for width in mins]
+        else:
+            leftover = usable - sum(mins)
+            extra_total = sum(extras) or 1
+            widths = [
+                mins[col] + leftover * (extras[col] / extra_total) for col in range(cols)
+            ]
+        line_h = 4.0
+        pad = 1.1
+        pdf.set_draw_color(180, 180, 180)
+        pdf.set_text_color(20, 20, 20)
+        for index, row in enumerate(rows):
+            pdf.set_font("Sans", "B" if index == 0 else "", size=8)
+            wrapped: list[list[str]] = []
+            for col, cell in enumerate(row):
+                lines = pdf.multi_cell(
+                    widths[col] - 2 * pad,
+                    line_h,
+                    cell or " ",
+                    dry_run=True,
+                    output="LINES",
+                )
+                wrapped.append(lines or [" "])
+            row_h = max(len(lines) for lines in wrapped) * line_h + 2 * pad
+            if pdf.get_y() + row_h > pdf.page_break_trigger:
+                pdf.add_page()
+            y0 = pdf.get_y()
+            x = pdf.l_margin
+            if index == 0:
+                pdf.set_fill_color(226, 232, 240)
+            else:
+                pdf.set_fill_color(255, 255, 255)
+            for col, lines in enumerate(wrapped):
+                pdf.set_font("Sans", "B" if index == 0 else "", size=8)
+                pdf.rect(x, y0, widths[col], row_h, style="FD")
+                pdf.set_xy(x + pad, y0 + pad)
+                pdf.multi_cell(widths[col] - 2 * pad, line_h, "\n".join(lines))
+                x += widths[col]
+            pdf.set_y(y0 + row_h)
+        pdf.ln(2)
+        table_rows.clear()
 
-        m = re.search(r"!\[[^\]]*\]\(([^)]+)\)", line)
-        if not m:
+    def embed_image(line: str) -> bool:
+        match = re.search(r"!\[([^\]]*)\]\(([^)]+)\)", line)
+        if not match:
             return False
-        img_path = Path(m.group(1))
-        if not img_path.is_absolute():
-            img_path = (ROOT / img_path).resolve()
-        if not img_path.exists():
-            write_body(f"[Missing image: {m.group(1)}]")
+        alt, raw_path = match.group(1), match.group(2)
+        img_path = _resolve_image(raw_path)
+        if img_path is None:
+            write_body(f"[Missing image: {raw_path}]")
             return True
         try:
-            pdf.ln(2)
-            pdf.image(str(img_path), w=min(usable, 170))
+            with Image.open(img_path) as image:
+                pixel_w, pixel_h = image.size
+            width = usable
+            height = width * (pixel_h / pixel_w) if pixel_w else usable
+            max_h = pdf.page_break_trigger - pdf.t_margin
+            if height > max_h:
+                height = max_h
+                width = height * (pixel_w / pixel_h) if pixel_h else usable
+            if pdf.get_y() + height + 8 > pdf.page_break_trigger:
+                pdf.add_page()
+            y = pdf.get_y()
+            pdf.image(str(img_path), x=pdf.l_margin, y=y, w=width, h=height)
+            pdf.set_y(y + height + 2)
+            if alt:
+                pdf.set_font("Sans", size=8)
+                pdf.set_text_color(90, 90, 90)
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(usable, 4, alt, new_x="LMARGIN", new_y="NEXT")
             pdf.ln(2)
         except Exception as exc:  # noqa: BLE001
-            write_body(f"[Could not embed image {img_path.name}: {exc}]")
+            write_body(f"[Could not embed image {Path(raw_path).name}: {exc}]")
         return True
 
     for raw in text.splitlines():
         line = raw.rstrip("\n")
 
-        if line.startswith("```"):
-            if in_code:
+        if in_code:
+            if line.startswith("```"):
                 in_code = False
                 code_lang = ""
                 pdf.ln(2)
             else:
-                in_code = True
-                code_lang = line[3:].strip()
-                pdf.ln(1)
-                if code_lang:
-                    pdf.set_font("Sans", size=8)
-                    pdf.set_text_color(90, 90, 90)
-                    pdf.multi_cell(
-                        w=usable,
-                        h=4,
-                        text=f"[{code_lang}]",
-                        new_x="LMARGIN",
-                        new_y="NEXT",
-                    )
+                write_code_line(line)
             continue
 
-        if in_code:
-            write_code_line(line)
+        if line.startswith("|"):
+            if not _is_table_separator(line):
+                table_rows.append(_split_row(line))
+            continue
+        flush_table()
+
+        if line.startswith("```"):
+            in_code = True
+            code_lang = line[3:].strip()
+            pdf.ln(1)
+            if code_lang:
+                pdf.set_font("Sans", size=8)
+                pdf.set_text_color(90, 90, 90)
+                pdf.multi_cell(
+                    w=usable,
+                    h=4,
+                    text=f"[{code_lang}]",
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
             continue
 
-        if maybe_embed_image(line):
+        if embed_image(line):
             continue
 
         if line.startswith("# "):
@@ -325,13 +427,14 @@ def write_pdf_from_markdown(md_path: Path, pdf_path: Path) -> bool:
             y = pdf.get_y()
             pdf.line(pdf.l_margin, y, pdf.l_margin + usable, y)
             pdf.ln(3)
-        elif line.startswith("|") and set(line.replace("|", "").strip()) <= {"-", ":"}:
-            continue  # skip markdown table separators
+        elif line.startswith(("- ", "* ")):
+            write_body("• " + line[2:].strip())
         elif not line.strip():
             pdf.ln(2)
         else:
             write_body(line)
 
+    flush_table()
     pdf.output(str(pdf_path))
     return True
 

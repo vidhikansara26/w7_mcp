@@ -136,7 +136,8 @@ def test_non_standard_item_escalate_hint():
     assert result["eligible"] is False
     assert result["decision_hint"] == "escalate"
     assert result["exceeds_frequency"] is False
-    assert "standard catalog" in result["reasons"][0].lower() or "not on the standard" in result["reasons"][0]
+    reason = result["reasons"][0].lower()
+    assert "standard catalog" in reason or "not on the standard" in reason
 
 
 def test_missing_tenure_data_escalate():
@@ -145,7 +146,8 @@ def test_missing_tenure_data_escalate():
     assert result["ok"] is True
     assert result["eligible"] is False
     assert result["decision_hint"] == "escalate"
-    assert "issued_date" in result["reasons"][0].lower() or "missing" in result["reasons"][0].lower()
+    reason = result["reasons"][0].lower()
+    assert "issued_date" in reason or "missing" in reason
 
 
 def test_eligibility_invalid_employee():
@@ -300,7 +302,8 @@ def test_flag_for_human_review_queue_and_timestamp():
 
     # JSONL append side effect
     assert bl.ESCALATIONS_PATH.exists()
-    lines = [ln for ln in bl.ESCALATIONS_PATH.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    raw = bl.ESCALATIONS_PATH.read_text(encoding="utf-8")
+    lines = [ln for ln in raw.splitlines() if ln.strip()]
     assert len(lines) == 1
     saved = json.loads(lines[0])
     assert saved["employee_id"] == "EMP-103"

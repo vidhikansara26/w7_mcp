@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_HOST = "http://localhost:11434"
-DEFAULT_MODEL = "llama3.1:8b"
+DEFAULT_MODEL = "qwen3:8b"
 
 
 def ollama_host() -> str:
@@ -26,10 +26,16 @@ def chat(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     timeout_s: float | None = None,
+    format: str | None = None,
 ) -> str:
-    """Send a chat completion to Ollama and return the assistant message content."""
+    """Send a chat completion to Ollama and return the assistant message content.
+
+    ``temperature`` defaults to 0 so a request stays on one tool path.
+    ``think`` is false so Qwen does not spend the reply on a thinking trace.
+    Pass ``format="json"`` when the reply must be a single JSON object.
+    """
     host = ollama_host()
     chosen_model = model or ollama_model()
     if timeout_s is None:
@@ -39,8 +45,11 @@ def chat(
         "model": chosen_model,
         "messages": messages,
         "stream": False,
+        "think": False,
         "options": {"temperature": temperature},
     }
+    if format:
+        payload["format"] = format
 
     url = f"{host}/api/chat"
     try:

@@ -6,11 +6,13 @@ instead of guessing.
 
 Pipeline: **Planner → TAO → Reflector**
 
-- **Planner**: system prompt; the model states its plan before acting.
-- **TAO**: Thought / Action / Observation over MCP tools, with an explicit `[ROUTE]`
-  step after `evaluate_request` returns.
-- **Reflector**: second LLM pass that confirms the draft; a decision lock snaps any
-  drift back to `evaluate_request.decision`.
+- **Planner**: each turn the model writes a thought that says what it knows, what is still missing, and why the next action follows.
+- **TAO**: Thought / Action / Observation over MCP tools. After `evaluate_request`,
+  the trace records that tool's decision and rule. The next thought chooses flag or finish.
+- **Reflector**: checkpoint after the draft. `PROCEED` keeps a draft the tool supports.
+  `DENY` sticks only when the tool said deny. `ESCALATE` flags for a human when the
+  tool said escalate, or when the review cannot tell. Any other disagreement snaps
+  back to `evaluate_request.decision`.
 
 Policy decisions are **deterministic** in `evaluate_request`. The LLM extracts fields,
 calls tools, routes, and drafts — it does not invent approve/deny/escalate.
@@ -56,14 +58,14 @@ pip install -r requirements.txt
 cp .env.example .env               # edit OLLAMA_HOST if needed
 ```
 
-Default model: `llama3.1:8b` via `OLLAMA_HOST` (often `http://host.docker.internal:11434`
+Default model: `qwen3:8b` with thinking off, via `OLLAMA_HOST` (often `http://host.docker.internal:11434`
 from Docker Desktop).
 
 ## Run
 
 ```bash
 # unit tests (no LLM)
-pytest test_business_logic.py -v
+pytest test_business_logic.py test_agent.py test_score.py -v
 
 # Suggested Approach step 3 — minimal one-tool proof
 python examples/minimal_client.py
@@ -94,5 +96,6 @@ python assemble_submission.py --pdf
 
 ## CI
 
-`.github/workflows/ci.yml` runs `pytest test_business_logic.py -v` on push/PR.
+`.github/workflows/ci.yml` runs Ruff, mypy, and
+`pytest test_business_logic.py test_agent.py test_score.py -v` on push/PR.
 No Ollama in CI.

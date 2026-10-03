@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "agent",
+    "assemble_submission",
+    "business_logic",
+    "llm",
+    "prompts",
+    "run_scenarios",
+    "score_traces",
+    "server",
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["agent.py", "llm.py", "prompts.py", "score_traces.py"]
+ignore_missing_imports = true

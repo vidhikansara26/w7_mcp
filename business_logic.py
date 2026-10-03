@@ -417,8 +417,10 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
         "years_since_last": round(elapsed, 2),
         "reasons": [
             f"Request exceeds frequency: last {item_key} issued {last_issued_str}; "
-            f"only {elapsed:.2f} years elapsed, policy requires {min_years} for {employee['role']}. "
-            "Call evaluate_request with the free-text reason to apply exceptional-justification rules."
+            f"only {elapsed:.2f} years elapsed, policy requires {min_years} "
+            f"for {employee['role']}. "
+            "Call evaluate_request with the free-text reason to apply "
+            "exceptional-justification rules."
         ],
     }
 
@@ -461,7 +463,11 @@ def evaluate_request(employee_id: str, item: str, reason: str) -> dict[str, Any]
         reasons_text = " ".join(base_reasons).lower()
         if "not on the standard" in reasons_text or "standard catalog" in reasons_text:
             rule = "non_standard_item"
-        elif "issued_date" in reasons_text or "missing" in reasons_text or "conflict" in reasons_text:
+        elif (
+            "issued_date" in reasons_text
+            or "missing" in reasons_text
+            or "conflict" in reasons_text
+        ):
             rule = "missing_tenure"
         else:
             rule = "ambiguous_eligibility"
